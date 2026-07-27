@@ -1,0 +1,96 @@
+name: BJTU Plugin CI
+
+on:
+  push:
+    paths:
+      - "plugin/**"
+      - "dist/**"
+      - "bjtu-service.json"
+      - ".github/workflows/plugin-ci.yml"
+  pull_request:
+    paths:
+      - "plugin/**"
+      - "dist/**"
+      - "bjtu-service.json"
+      - ".github/workflows/plugin-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BJTU_HOST_COMMIT: 6e54b2a8988fc0b199253735ce232b4c36e0df3d
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: plugin/package-lock.json
+
+      - name: Install locked dependencies
+        working-directory: plugin
+        run: npm ci
+
+      - name: Unit and integration tests
+        working-directory: plugin
+        run: npm test
+
+      - name: Build committed static package
+        working-directory: plugin
+        run: npm run build
+
+      - name: Verify committed dist is reproducible
+        working-directory: plugin
+        run: npm run check:dist
+
+      - name: Check package limits
+        working-directory: plugin
+        run: npm run check:package
+
+      - name: Check out pinned BJTU MIS host
+        uses: actions/checkout@v4
+        with:
+          repository: wan300/bjtu_mis_Android
+          ref: ${{ env.BJTU_HOST_COMMIT }}
+          path: .bjtu-host
+
+      - name: Validate manifest against pinned schema
+        run: |
+          npx --yes ajv-cli@5.0.0 validate \
+            --spec=draft2020 \
+            -s .bjtu-host/web/assets/schemas/third-party-service-manifest.schema.json \
+            -d bjtu-service.json
+
+      - name: Run pinned official plugin lint
+        run: node .bjtu-host/tools/third-party-service-lint.cjs .
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      JM_OPTION_PATH_TEST: ./assets/option/option_test_api.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Python project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e .
+      - name: Run existing Python tests
+        working-directory: tests
+        run: python -m unittest
+      - name: Build Python distributions outside plugin dist
+        run: python -m build --outdir python-dist

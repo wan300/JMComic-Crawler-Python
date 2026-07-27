@@ -14,7 +14,13 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+/python-dist/
+/plugin/node_modules/
+/plugin/test-results/
+/plugin/playwright-report/
+/output/playwright/results/
+/output/playwright/report/
+/.bjtu-host/
 downloads/
 eggs/
 .eggs/

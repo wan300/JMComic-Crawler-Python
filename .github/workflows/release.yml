@@ -21,9 +21,10 @@ jobs:
       - name: Build
         run: |
           python -m pip install build
-          python -m build
+          python -m build --outdir python-dist
 
       - name: Publish PYPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_JMCOMIC }}
+          packages-dir: python-dist/
