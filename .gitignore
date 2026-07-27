@@ -26,6 +26,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+!/plugin/src/lib/
+!/plugin/src/lib/**
 parts/
 sdist/
 var/
