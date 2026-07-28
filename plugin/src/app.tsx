@@ -67,7 +67,12 @@ import {
   encodeBackup,
   importBackup,
 } from './lib/backup';
-import { HorizontalReader, persistReaderProgress, VerticalReader } from './reader';
+import {
+  HorizontalReader,
+  normalizeReaderPage,
+  persistReaderProgress,
+  VerticalReader,
+} from './reader';
 
 type Tab = 'discover' | 'search' | 'library' | 'downloads' | 'settings';
 type Route =
@@ -766,6 +771,8 @@ function ReaderView({
 
   const load = useCallback(async () => {
     setError(null);
+    setAlbum(null);
+    setChapter(null);
     try {
       const [cachedAlbum, cachedChapter, progress] = await Promise.all([
         getAlbum(albumId),
@@ -774,12 +781,13 @@ function ReaderView({
       ]);
       const nextAlbum = cachedAlbum || await jmClient.album(albumId);
       const nextChapter = cachedChapter || await jmClient.chapter(chapterId);
-      setAlbum(nextAlbum);
-      setChapter(nextChapter);
       await Promise.all([saveAlbum(nextAlbum), saveChapter(nextChapter)]);
-      const page = progress?.chapterId === chapterId ? progress.page : 0;
+      const requestedPage = progress?.chapterId === chapterId ? progress.page : 0;
+      const page = normalizeReaderPage(requestedPage, nextChapter.images.length);
       setInitialPage(page);
       setCurrentPage(page);
+      setAlbum(nextAlbum);
+      setChapter(nextChapter);
       await addHistory({
         albumId,
         chapterId,

@@ -47,6 +47,11 @@ function rubberband(overshoot: number, dimension: number, constant = 0.55): numb
   return (overshoot * dimension * constant) / (dimension + constant * Math.abs(overshoot));
 }
 
+export function normalizeReaderPage(page: number, pageCount: number): number {
+  if (!Number.isFinite(page) || pageCount <= 0) return 0;
+  return Math.max(0, Math.min(pageCount - 1, Math.trunc(page)));
+}
+
 export function VerticalReader({
   album,
   chapter,
@@ -54,24 +59,79 @@ export function VerticalReader({
   initialPage,
   onPageChange,
 }: ReaderProps) {
-  const initial = useRef(false);
+  const container = useRef<HTMLDivElement>(null);
+  const restoring = useRef(false);
+  const resumeTarget = useRef(0);
+
   useEffect(() => {
-    if (!initial.current && initialPage > 0) {
-      initial.current = true;
-      requestAnimationFrame(() => document.querySelector(`[data-reader-page="${initialPage}"]`)?.scrollIntoView());
+    const targetPage = normalizeReaderPage(initialPage, chapter.images.length);
+    resumeTarget.current = targetPage;
+    if (targetPage <= 0 || !container.current) {
+      restoring.current = false;
+      return;
     }
-  }, [initialPage]);
+
+    restoring.current = true;
+    let frame = 0;
+    let timeout = 0;
+    let observer: ResizeObserver | null = null;
+    let stopped = false;
+
+    const align = () => {
+      if (stopped) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        container.current
+          ?.querySelector<HTMLElement>(`[data-reader-page="${targetPage}"]`)
+          ?.scrollIntoView({ behavior: 'auto', block: 'start' });
+      });
+    };
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      restoring.current = false;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+      observer?.disconnect();
+      window.removeEventListener('pointerdown', stop, true);
+      window.removeEventListener('touchstart', stop, true);
+      window.removeEventListener('wheel', stop, true);
+      window.removeEventListener('keydown', stop, true);
+    };
+
+    align();
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(align);
+      observer.observe(container.current);
+    }
+    window.addEventListener('pointerdown', stop, { capture: true, passive: true });
+    window.addEventListener('touchstart', stop, { capture: true, passive: true });
+    window.addEventListener('wheel', stop, { capture: true, passive: true });
+    window.addEventListener('keydown', stop, true);
+    timeout = window.setTimeout(stop, 12_000);
+    return stop;
+  }, [chapter.id, chapter.images.length, initialPage]);
+
+  const visiblePage = (page: number) => {
+    if (restoring.current && page !== resumeTarget.current) return;
+    onPageChange(page);
+  };
+
   return (
-    <div class="vertical-reader">
+    <div class="vertical-reader" ref={container}>
       {chapter.images.map((url, page) => (
-        <div key={url} data-reader-page={page}>
+        <div
+          key={url}
+          data-reader-page={page}
+          data-resume-target={page === normalizeReaderPage(initialPage, chapter.images.length) || undefined}
+        >
           <ComicImage
             albumId={album.id}
             chapterId={chapter.id}
             page={page}
             url={url}
             scrambleId={chapter.scrambleId}
-            onVisible={onPageChange}
+            onVisible={visiblePage}
           />
         </div>
       ))}
@@ -86,7 +146,7 @@ export function HorizontalReader({
   initialPage,
   onPageChange,
 }: ReaderProps) {
-  const [page, setPage] = useState(Math.min(initialPage, chapter.images.length - 1));
+  const [page, setPage] = useState(normalizeReaderPage(initialPage, chapter.images.length));
   const [offset, setOffset] = useState(0);
   const start = useRef<{ x: number; time: number; lastX: number; lastTime: number; velocity: number } | null>(null);
   const animation = useRef<(() => void) | null>(null);
@@ -94,8 +154,11 @@ export function HorizontalReader({
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
-    setPage(Math.min(initialPage, chapter.images.length - 1));
-  }, [chapter.id]);
+    animation.current?.();
+    animation.current = null;
+    setOffset(0);
+    setPage(normalizeReaderPage(initialPage, chapter.images.length));
+  }, [chapter.id, chapter.images.length, initialPage]);
 
   useEffect(() => {
     const element = viewport.current;

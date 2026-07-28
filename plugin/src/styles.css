@@ -287,6 +287,8 @@ input[role="switch"]:checked::before { transform: translateX(20px); }
 
 .reader-shell { min-height: 100vh; background: #050506; color: white; overscroll-behavior: contain; }
 .vertical-reader { width: min(100%, 920px); min-height: 100vh; margin: 0 auto; }
+.vertical-reader > [data-reader-page] { overflow-anchor: none; }
+.vertical-reader > [data-resume-target="true"] { overflow-anchor: auto; }
 .comic-page { position: relative; width: 100%; min-height: 120px; background: #111; }
 .comic-page > img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
 .image-placeholder { min-height: 55vh; display: grid; place-items: center; }

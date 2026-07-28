@@ -114,6 +114,48 @@ test('搜索、详情、双阅读模式、下载与离线快照闭环', async ({
   await expect(page.locator('.detail-summary h1')).toBeVisible();
   await page.getByRole('button', { name: /续读/ }).click();
   await expect(page.locator('.horizontal-reader')).toBeVisible();
+  await expect(page.locator('.page-indicator')).toContainText('2 / 5');
+});
+
+test('连续竖读会恢复到保存的续读页面', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone', '续读定位只需在手机项目运行一次');
+  await prepare(page);
+  await page.getByRole('button', { name: '搜索' }).click();
+  await page.getByLabel('搜索漫画').fill('示例');
+  await page.locator('.search-box').getByRole('button', { name: '搜索', exact: true }).click();
+  await page.locator('.album-card-button').first().click();
+  await page.getByRole('button', { name: /开始阅读|续读/ }).click();
+
+  const target = page.locator('[data-reader-page="3"]');
+  await expect(target.locator('.comic-page:not(.image-placeholder)')).toBeVisible();
+  await target.scrollIntoViewIfNeeded();
+  await expect(target).toBeInViewport();
+  await page.waitForFunction(async () => {
+    const request = indexedDB.open('jmcomic-reader');
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const progress = await new Promise<{ page?: number } | undefined>((resolve, reject) => {
+      const tx = db.transaction('progress', 'readonly');
+      const getRequest = tx.objectStore('progress').get('438516');
+      getRequest.onsuccess = () => resolve(getRequest.result);
+      getRequest.onerror = () => reject(getRequest.error);
+    });
+    db.close();
+    return progress?.page === 3;
+  });
+
+  await page.getByRole('button', { name: '返回漫画详情' }).click();
+  await expect(page.getByRole('button', { name: /续读 · 第 4 页/ })).toBeVisible();
+  await page.getByRole('button', { name: /续读 · 第 4 页/ }).click();
+  await expect(page.locator('.vertical-reader')).toBeVisible();
+  await page.waitForFunction(() => {
+    const element = document.querySelector<HTMLElement>('[data-reader-page="3"]');
+    if (!element) return false;
+    const bounds = element.getBoundingClientRect();
+    return bounds.top >= -2 && bounds.top < window.innerHeight * 0.2;
+  });
 });
 
 test('键盘路径与基础可访问性', async ({ page }, testInfo) => {
