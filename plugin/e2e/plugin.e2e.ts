@@ -43,6 +43,19 @@ test('18+ 确认完整位于宿主可视区域', async ({ page }) => {
   expect(cardBox!.y + cardBox!.height).toBeLessThanOrEqual(viewport!.height);
 });
 
+test('窄横屏门槛页保持单栏并可滚动确认', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone', '窄横屏兼容只需运行一次');
+  await page.setViewportSize({ width: 590, height: 390 });
+  await page.goto('/?mock=1#/discover');
+
+  const card = page.getByRole('dialog', { name: '仅限成年人' }).locator('.gate-card');
+  const confirmButton = page.getByRole('button', { name: '我已年满 18 周岁' });
+  await expect(card).toHaveCSS('display', 'block');
+  expect((await card.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+  await confirmButton.scrollIntoViewIfNeeded();
+  await expect(confirmButton).toBeInViewport();
+});
+
 test('关键布局与主题快照', async ({ page }, testInfo) => {
   await prepare(page);
   await expect(page).toHaveScreenshot('discover.png', { fullPage: true });
