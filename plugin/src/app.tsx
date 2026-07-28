@@ -650,8 +650,16 @@ function AlbumDetailView({
 
   const load = useCallback(async () => {
     setError(null);
-    const cached = await getAlbum(albumId);
+    const [cached, savedFavorite, savedGroups, savedProgress] = await Promise.all([
+      getAlbum(albumId),
+      getFavorite(albumId),
+      listGroups(),
+      getProgress(albumId),
+    ]);
     if (cached) setAlbum(cached);
+    setFavoriteState(savedFavorite || null);
+    setGroups(savedGroups);
+    setProgress(savedProgress || null);
     try {
       const fresh = await jmClient.album(albumId);
       setAlbum(fresh);
@@ -659,9 +667,6 @@ function AlbumDetailView({
     } catch (cause) {
       if (!cached) setError(cause);
     }
-    setFavoriteState((await getFavorite(albumId)) || null);
-    setGroups(await listGroups());
-    setProgress((await getProgress(albumId)) || null);
   }, [albumId]);
   useEffect(() => { void load(); }, [load]);
 
