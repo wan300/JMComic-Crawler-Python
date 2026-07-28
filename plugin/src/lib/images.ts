@@ -8,6 +8,25 @@ export interface StripGeometry {
   height: number;
 }
 
+export function containSize(
+  width: number,
+  height: number,
+  maxWidth: number,
+  maxHeight: number,
+): { width: number; height: number } {
+  if (
+    ![width, height, maxWidth, maxHeight].every(Number.isFinite) ||
+    width <= 0 ||
+    height <= 0 ||
+    maxWidth <= 0 ||
+    maxHeight <= 0
+  ) {
+    return { width: 0, height: 0 };
+  }
+  const scale = Math.min(maxWidth / width, maxHeight / height);
+  return { width: width * scale, height: height * scale };
+}
+
 export function isAllowedOrigin(url: string): boolean {
   try {
     return ALLOWED_ORIGINS.has(new URL(url).origin);

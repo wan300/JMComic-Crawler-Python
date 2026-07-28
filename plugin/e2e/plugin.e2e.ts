@@ -84,6 +84,11 @@ test('搜索、详情、双阅读模式、下载与离线快照闭环', async ({
   await expect(page.locator('.vertical-reader')).toBeVisible();
   await page.getByRole('button', { name: '横向单页' }).click();
   await expect(page.locator('.horizontal-reader')).toBeVisible();
+  const horizontalPage = page.locator('.horizontal-track .comic-page:not(.image-placeholder)');
+  await expect(horizontalPage).toBeVisible();
+  const horizontalBounds = await horizontalPage.boundingBox();
+  expect(horizontalBounds!.width).toBeGreaterThan(1);
+  expect(horizontalBounds!.height).toBeGreaterThan(1);
   await page.locator('.horizontal-reader').press('ArrowRight');
   await expect(page.locator('.page-indicator')).toContainText('2 / 5');
   await page.getByRole('button', { name: '下载当前章' }).click();

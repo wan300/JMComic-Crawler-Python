@@ -1,11 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { md5Hex } from '../src/lib/crypto';
 import {
+  containSize,
   isAllowedOrigin,
   parseJmId,
   segmentationCount,
   stripGeometry,
 } from '../src/lib/images';
+
+describe('contained reader dimensions', () => {
+  it('fits portrait pages by width without distortion', () => {
+    expect(containSize(600, 900, 390, 844)).toEqual({ width: 390, height: 585 });
+  });
+
+  it('fits tall pages by height and rejects zero bounds', () => {
+    const fitted = containSize(600, 1800, 390, 844);
+    expect(fitted.width).toBeCloseTo(844 / 3);
+    expect(fitted.height).toBe(844);
+    expect(containSize(600, 900, 0, 844)).toEqual({ width: 0, height: 0 });
+  });
+});
 
 describe('JM id parsing', () => {
   it.each([

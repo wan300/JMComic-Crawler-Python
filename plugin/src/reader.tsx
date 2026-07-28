@@ -91,10 +91,31 @@ export function HorizontalReader({
   const start = useRef<{ x: number; time: number; lastX: number; lastTime: number; velocity: number } | null>(null);
   const animation = useRef<(() => void) | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     setPage(Math.min(initialPage, chapter.images.length - 1));
   }, [chapter.id]);
+
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    const update = () => {
+      const width = element.clientWidth;
+      const height = element.clientHeight;
+      setViewportSize((current) => current.width === width && current.height === height
+        ? current
+        : { width, height });
+    };
+    update();
+    window.addEventListener('resize', update);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    observer?.observe(element);
+    return () => {
+      window.removeEventListener('resize', update);
+      observer?.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     onPageChange(page);
@@ -194,6 +215,7 @@ export function HorizontalReader({
           page={page}
           url={chapter.images[page]}
           scrambleId={chapter.scrambleId}
+          fitWithin={viewportSize}
         />
       </div>
       <button class="reader-hit reader-hit-left" type="button" aria-label="上一页" onClick={() => navigate(-1)} />

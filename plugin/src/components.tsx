@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { AlbumSummary, ReaderSettings } from './types';
 import { loadImage } from './lib/cache';
-import { isGif, segmentationCount, stripGeometry } from './lib/images';
+import { containSize, isGif, segmentationCount, stripGeometry } from './lib/images';
 import { md5Hex } from './lib/crypto';
 
 export function Spinner({ label = '正在加载' }: { label?: string }) {
@@ -154,6 +154,7 @@ export function ComicImage({
   scrambleId,
   active = true,
   onVisible,
+  fitWithin,
 }: {
   albumId: string;
   chapterId: string;
@@ -162,6 +163,7 @@ export function ComicImage({
   scrambleId: number;
   active?: boolean;
   onVisible?: (page: number) => void;
+  fitWithin?: { width: number; height: number };
 }) {
   const [src, setSrc] = useState('');
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
@@ -220,9 +222,15 @@ export function ComicImage({
   const filename = new URL(url).pathname.split('/').pop() || '';
   const count = isGif(filename) ? 0 : segmentationCount(scrambleId, chapterId, filename, md5Hex);
   const strips = useMemo(() => stripGeometry(size.height, count), [size.height, count]);
+  const fitted = fitWithin
+    ? containSize(size.width, size.height, fitWithin.width, fitWithin.height)
+    : null;
+  const fittedStyle = fitted && fitted.width > 0 && fitted.height > 0
+    ? { width: `${fitted.width}px`, height: `${fitted.height}px` }
+    : undefined;
   if (!count) {
     return (
-      <div class="comic-page" ref={element}>
+      <div class="comic-page" ref={element} style={fittedStyle}>
         <img src={src} alt={`第 ${page + 1} 页`} draggable={false} />
       </div>
     );
@@ -233,7 +241,7 @@ export function ComicImage({
       ref={element}
       role="img"
       aria-label={`第 ${page + 1} 页`}
-      style={{ aspectRatio: `${size.width} / ${size.height}` }}
+      style={{ aspectRatio: `${size.width} / ${size.height}`, ...fittedStyle }}
     >
       {strips.map((strip) => {
         const backgroundHeight = size.height / strip.height * 100;
