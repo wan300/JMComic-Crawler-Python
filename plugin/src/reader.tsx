@@ -52,6 +52,69 @@ export function normalizeReaderPage(page: number, pageCount: number): number {
   return Math.max(0, Math.min(pageCount - 1, Math.trunc(page)));
 }
 
+export interface VerticalPageBounds {
+  page: number;
+  top: number;
+  bottom: number;
+}
+
+export const VERTICAL_READING_ANCHOR = 0.45;
+
+export function selectVerticalReaderPage(
+  pages: VerticalPageBounds[],
+  viewportHeight: number,
+  anchorRatio = VERTICAL_READING_ANCHOR,
+): number | null {
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) return null;
+  const ratio = Math.max(0, Math.min(1, anchorRatio));
+  const anchor = viewportHeight * ratio;
+  let best: {
+    page: number;
+    distance: number;
+    centerDistance: number;
+    visiblePixels: number;
+  } | null = null;
+
+  for (const item of pages) {
+    if (
+      !Number.isFinite(item.page)
+      || !Number.isFinite(item.top)
+      || !Number.isFinite(item.bottom)
+      || item.bottom <= item.top
+    ) continue;
+    const visibleTop = Math.max(0, item.top);
+    const visibleBottom = Math.min(viewportHeight, item.bottom);
+    const visiblePixels = visibleBottom - visibleTop;
+    if (visiblePixels <= 0) continue;
+
+    const distance = anchor < item.top
+      ? item.top - anchor
+      : anchor >= item.bottom
+        ? anchor - item.bottom
+        : 0;
+    const centerDistance = Math.abs((visibleTop + visibleBottom) / 2 - anchor);
+    const candidate = { page: item.page, distance, centerDistance, visiblePixels };
+    if (
+      !best
+      || candidate.distance < best.distance
+      || (candidate.distance === best.distance && candidate.centerDistance < best.centerDistance)
+      || (
+        candidate.distance === best.distance
+        && candidate.centerDistance === best.centerDistance
+        && candidate.visiblePixels > best.visiblePixels
+      )
+      || (
+        candidate.distance === best.distance
+        && candidate.centerDistance === best.centerDistance
+        && candidate.visiblePixels === best.visiblePixels
+        && candidate.page < best.page
+      )
+    ) best = candidate;
+  }
+
+  return best?.page ?? null;
+}
+
 export function VerticalReader({
   album,
   chapter,
@@ -62,6 +125,7 @@ export function VerticalReader({
   const container = useRef<HTMLDivElement>(null);
   const restoring = useRef(false);
   const resumeTarget = useRef(0);
+  const reportedPage = useRef(normalizeReaderPage(initialPage, chapter.images.length));
 
   useEffect(() => {
     const targetPage = normalizeReaderPage(initialPage, chapter.images.length);
@@ -112,10 +176,54 @@ export function VerticalReader({
     return stop;
   }, [chapter.id, chapter.images.length, initialPage]);
 
-  const visiblePage = (page: number) => {
-    if (restoring.current && page !== resumeTarget.current) return;
-    onPageChange(page);
-  };
+  useEffect(() => {
+    const root = container.current;
+    if (!root) return;
+    reportedPage.current = normalizeReaderPage(initialPage, chapter.images.length);
+    let frame = 0;
+
+    const evaluate = () => {
+      frame = 0;
+      const viewportHeight = window.visualViewport?.height
+        || document.documentElement.clientHeight
+        || window.innerHeight;
+      const pages: VerticalPageBounds[] = [];
+      for (const element of root.querySelectorAll<HTMLElement>('[data-reader-page]')) {
+        const bounds = element.getBoundingClientRect();
+        if (bounds.bottom <= 0) continue;
+        if (bounds.top >= viewportHeight) break;
+        pages.push({
+          page: Number(element.dataset.readerPage),
+          top: bounds.top,
+          bottom: bounds.bottom,
+        });
+      }
+      const page = selectVerticalReaderPage(pages, viewportHeight);
+      if (page === null) return;
+      if (restoring.current && page !== resumeTarget.current) return;
+      if (page === reportedPage.current) return;
+      reportedPage.current = page;
+      onPageChange(page);
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(evaluate);
+    };
+
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    window.visualViewport?.addEventListener('resize', schedule);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
+    observer?.observe(root);
+    schedule();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      window.visualViewport?.removeEventListener('resize', schedule);
+    };
+  }, [chapter.id, chapter.images.length, initialPage, onPageChange]);
 
   return (
     <div class="vertical-reader" ref={container}>
@@ -131,7 +239,6 @@ export function VerticalReader({
             page={page}
             url={url}
             scrambleId={chapter.scrambleId}
-            onVisible={visiblePage}
           />
         </div>
       ))}

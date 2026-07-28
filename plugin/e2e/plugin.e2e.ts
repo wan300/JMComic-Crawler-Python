@@ -183,6 +183,40 @@ test('连续竖读会恢复到保存的续读页面', async ({ page }, testInfo)
   });
 });
 
+test('连续竖读多页同时可见时按阅读锚点选择唯一页码', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone', '多页可见判定只需在手机项目运行一次');
+  await prepare(page);
+  await page.getByRole('button', { name: '搜索' }).click();
+  await page.getByLabel('搜索漫画').fill('示例');
+  await page.locator('.search-box').getByRole('button', { name: '搜索', exact: true }).click();
+  await page.locator('.album-card-button').first().click();
+  await page.getByRole('button', { name: /开始阅读|续读/ }).click();
+
+  const firstPage = page.locator('[data-reader-page="0"]');
+  const secondPage = page.locator('[data-reader-page="1"]');
+  await expect(firstPage.locator('.comic-page:not(.image-placeholder)')).toBeVisible();
+  await expect(secondPage.locator('.comic-page:not(.image-placeholder)')).toBeVisible();
+
+  const placeSecondPageAt = async (top: number) => page.evaluate(async ({ desiredTop }) => {
+    const target = document.querySelector<HTMLElement>('[data-reader-page="1"]');
+    if (!target) throw new Error('缺少第二页');
+    window.scrollBy(0, target.getBoundingClientRect().top - desiredTop);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    return [...document.querySelectorAll<HTMLElement>('[data-reader-page]')]
+      .filter((element) => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.bottom > 0 && bounds.top < window.innerHeight;
+      })
+      .length;
+  }, { desiredTop: top });
+
+  expect(await placeSecondPageAt(500)).toBeGreaterThanOrEqual(2);
+  await expect(page.getByRole('status', { name: '阅读进度：第 1 页，共 5 页' })).toBeVisible();
+
+  expect(await placeSecondPageAt(350)).toBeGreaterThanOrEqual(2);
+  await expect(page.getByRole('status', { name: '阅读进度：第 2 页，共 5 页' })).toBeVisible();
+});
+
 test('键盘路径与基础可访问性', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'phone', '可访问性扫描只需运行一次');
   await prepare(page);

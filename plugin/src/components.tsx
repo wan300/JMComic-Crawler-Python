@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useState } from 'preact/hooks';
 import type { AlbumSummary, ReaderSettings } from './types';
 import { loadImage } from './lib/cache';
 import { containSize, isGif, segmentationCount, stripGeometry } from './lib/images';
@@ -153,7 +153,6 @@ export function ComicImage({
   url,
   scrambleId,
   active = true,
-  onVisible,
   fitWithin,
 }: {
   albumId: string;
@@ -162,13 +161,11 @@ export function ComicImage({
   url: string;
   scrambleId: number;
   active?: boolean;
-  onVisible?: (page: number) => void;
   fitWithin?: { width: number; height: number };
 }) {
   const [src, setSrc] = useState('');
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const element = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!active) return;
@@ -192,21 +189,9 @@ export function ComicImage({
     };
   }, [active, albumId, chapterId, page, url]);
 
-  useEffect(() => {
-    if (!element.current || !onVisible) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 0.45)) onVisible(page);
-      },
-      { threshold: [0.45, 0.7] },
-    );
-    observer.observe(element.current);
-    return () => observer.disconnect();
-  }, [page, onVisible]);
-
   if (error) {
     return (
-      <div class="comic-page image-error" ref={element}>
+      <div class="comic-page image-error">
         <p>第 {page + 1} 页加载失败</p>
         <button type="button" class="button subtle" onClick={() => {
           setError(null);
@@ -217,7 +202,7 @@ export function ComicImage({
     );
   }
   if (!src || !size) {
-    return <div class="comic-page image-placeholder" ref={element}><span class="spinner" /></div>;
+    return <div class="comic-page image-placeholder"><span class="spinner" /></div>;
   }
   const filename = new URL(url).pathname.split('/').pop() || '';
   const count = isGif(filename) ? 0 : segmentationCount(scrambleId, chapterId, filename, md5Hex);
@@ -230,7 +215,7 @@ export function ComicImage({
     : undefined;
   if (!count) {
     return (
-      <div class="comic-page" ref={element} style={fittedStyle}>
+      <div class="comic-page" style={fittedStyle}>
         <img src={src} alt={`第 ${page + 1} 页`} draggable={false} />
       </div>
     );
@@ -238,7 +223,6 @@ export function ComicImage({
   return (
     <div
       class="comic-page scrambled-page"
-      ref={element}
       role="img"
       aria-label={`第 ${page + 1} 页`}
       style={{ aspectRatio: `${size.width} / ${size.height}`, ...fittedStyle }}
