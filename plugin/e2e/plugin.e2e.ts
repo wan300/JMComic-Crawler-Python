@@ -26,6 +26,23 @@ async function prepare(page: Page) {
   await expect(page.locator('.album-card').first()).toBeVisible();
 }
 
+test('18+ 确认完整位于宿主可视区域', async ({ page }) => {
+  await page.goto('/?mock=1#/discover');
+  const dialog = page.getByRole('dialog', { name: '仅限成年人' });
+  const confirmButton = page.getByRole('button', { name: '我已年满 18 周岁' });
+  await expect(dialog).toBeVisible();
+  await expect(confirmButton).toBeInViewport();
+
+  const cardBox = await dialog.locator('.gate-card').boundingBox();
+  const viewport = page.viewportSize();
+  expect(cardBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(cardBox!.x).toBeGreaterThanOrEqual(0);
+  expect(cardBox!.y).toBeGreaterThanOrEqual(0);
+  expect(cardBox!.x + cardBox!.width).toBeLessThanOrEqual(viewport!.width);
+  expect(cardBox!.y + cardBox!.height).toBeLessThanOrEqual(viewport!.height);
+});
+
 test('关键布局与主题快照', async ({ page }, testInfo) => {
   await prepare(page);
   await expect(page).toHaveScreenshot('discover.png', { fullPage: true });
