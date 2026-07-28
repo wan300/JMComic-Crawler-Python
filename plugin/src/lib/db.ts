@@ -270,10 +270,37 @@ export async function clearHistory(): Promise<void> {
   await (await getDatabase()).clear('history');
 }
 
+function searchHistoryKey(query: string): string {
+  return query.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 export async function addSearchHistory(entry: Omit<SearchHistoryEntry, 'id'>): Promise<void> {
+  const query = entry.query.trim();
+  if (!query) return;
   const db = await getDatabase();
   const tx = db.transaction('searchHistory', 'readwrite');
-  await tx.store.add(entry);
+  const values = await tx.store.index('bySearchedAt').getAll();
+  const incomingKey = searchHistoryKey(query);
+  const seen = new Set<string>();
+  let preferred: Omit<SearchHistoryEntry, 'id'> = { ...entry, query };
+  for (const value of values.reverse()) {
+    const key = searchHistoryKey(value.query);
+    if (key === incomingKey) {
+      if (value.searchedAt > preferred.searchedAt) {
+        preferred = {
+          query: value.query.trim(),
+          kind: value.kind,
+          searchedAt: value.searchedAt,
+        };
+      }
+      if (value.id !== undefined) await tx.store.delete(value.id);
+    } else if (seen.has(key)) {
+      if (value.id !== undefined) await tx.store.delete(value.id);
+    } else {
+      seen.add(key);
+    }
+  }
+  await tx.store.add(preferred);
   const keys = await tx.store.index('bySearchedAt').getAllKeys();
   for (const key of keys.slice(0, Math.max(0, keys.length - 50))) await tx.store.delete(key);
   await tx.done;
@@ -281,7 +308,13 @@ export async function addSearchHistory(entry: Omit<SearchHistoryEntry, 'id'>): P
 
 export async function listSearchHistory(): Promise<SearchHistoryEntry[]> {
   const values = await (await getDatabase()).getAllFromIndex('searchHistory', 'bySearchedAt');
-  return values.reverse();
+  const seen = new Set<string>();
+  return values.reverse().filter((entry) => {
+    const key = searchHistoryKey(entry.query);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function clearSearchHistory(): Promise<void> {

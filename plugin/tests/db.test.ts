@@ -85,6 +85,17 @@ describe('IndexedDB migrations and durable state', () => {
     expect(searches.at(-1)?.query).toBe('q5');
   });
 
+  it('merges repeated search terms and moves the latest search to the front', async () => {
+    await addSearchHistory({ query: '元素', kind: 0, searchedAt: 1 });
+    await addSearchHistory({ query: '魔法', kind: 1, searchedAt: 2 });
+    await addSearchHistory({ query: '  元素  ', kind: 2, searchedAt: 3 });
+
+    const searches = await listSearchHistory();
+    expect(searches).toHaveLength(2);
+    expect(searches.map((entry) => entry.query)).toEqual(['元素', '魔法']);
+    expect(searches[0]).toMatchObject({ kind: 2, searchedAt: 3 });
+  });
+
   it('updates one local favorite instead of duplicating it', async () => {
     await setFavorite('1', { note: 'old' });
     await setFavorite('1', { note: 'new', groupId: 'reading' });

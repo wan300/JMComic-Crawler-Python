@@ -1,6 +1,7 @@
 import { gunzipSync, gzipSync, strFromU8, strToU8 } from 'fflate';
 import type { BackupPayloadV1, BackupPreview, ReaderSettings } from '../types';
 import {
+  addSearchHistory,
   clearMetadataForImport,
   getAlbum,
   getDatabase,
@@ -146,7 +147,7 @@ export async function importBackup(
     const existing = await getProgress(progress.albumId);
     if (!existing || progress.updatedAt >= existing.updatedAt) await db.put('progress', progress);
   }
-  for (const search of payload.searchHistory || []) await db.add('searchHistory', {
+  for (const search of payload.searchHistory || []) await addSearchHistory({
     query: search.query,
     kind: search.kind,
     searchedAt: search.searchedAt,

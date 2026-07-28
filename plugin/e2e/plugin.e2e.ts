@@ -141,6 +141,46 @@ test('搜索、详情、双阅读模式、下载与离线快照闭环', async ({
   await expect(page.getByRole('status', { name: '阅读进度：第 2 页，共 5 页' })).toBeVisible();
 });
 
+test('漫画详情返回保留搜索结果且重复搜索词只显示一次', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone', '搜索返回与历史顺序只需在手机项目运行一次');
+  await prepare(page);
+  await page.getByRole('button', { name: '搜索' }).click();
+  const input = page.getByLabel('搜索漫画');
+  const submit = page.locator('.search-box').getByRole('button', { name: '搜索', exact: true });
+
+  await input.fill('元素');
+  await submit.click();
+  await expect(page.locator('.search-screen .section-heading h2')).toHaveText('“元素”');
+
+  await input.fill('魔法');
+  await submit.click();
+  await expect(page.locator('.search-screen .section-heading h2')).toHaveText('“魔法”');
+
+  await input.fill('元素');
+  await submit.click();
+  await expect(page.locator('.search-screen .section-heading h2')).toHaveText('“元素”');
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '搜索', level: 1 })).toBeVisible();
+  const terms = page.locator('.history-list button > span:nth-child(2)');
+  await expect(terms).toHaveCount(2);
+  await expect(terms.nth(0)).toHaveText('元素');
+  await expect(terms.nth(1)).toHaveText('魔法');
+
+  await input.fill('示例');
+  await submit.click();
+  await expect(page.locator('.search-screen .section-heading h2')).toHaveText('“示例”');
+  await expect(page.locator('.album-card-button').first()).toBeVisible();
+  await page.locator('.album-card-button').first().click();
+  await expect(page.locator('.detail-summary h1')).toBeVisible();
+
+  await page.getByRole('button', { name: '返回' }).click();
+  await expect(page).toHaveURL(/#\/search$/);
+  await expect(input).toHaveValue('示例');
+  await expect(page.locator('.search-screen .section-heading h2')).toHaveText('“示例”');
+  await expect(page.locator('.album-card')).not.toHaveCount(0);
+});
+
 test('连续竖读会恢复到保存的续读页面', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'phone', '续读定位只需在手机项目运行一次');
   await prepare(page);

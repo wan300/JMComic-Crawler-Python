@@ -80,6 +80,24 @@ type Route =
   | { type: 'album'; albumId: string }
   | { type: 'reader'; albumId: string; chapterId: string };
 
+interface SearchSession {
+  query: string;
+  kind: SearchKind;
+  order: string;
+  time: string;
+  result: SearchPage | null;
+  scrollY: number;
+}
+
+const EMPTY_SEARCH_SESSION: SearchSession = {
+  query: '',
+  kind: 0,
+  order: 'mr',
+  time: 'a',
+  result: null,
+  scrollY: 0,
+};
+
 const TAB_LABELS: Record<Tab, string> = {
   discover: '发现',
   search: '搜索',
@@ -202,37 +220,57 @@ function SearchView({
   openAlbum,
   initial,
   clearInitial,
+  session,
+  updateSession,
 }: {
   settings: ReaderSettings;
   openAlbum: (album: AlbumSummary) => void;
   initial: { query: string; kind: SearchKind } | null;
   clearInitial: () => void;
+  session: SearchSession;
+  updateSession: (patch: Partial<SearchSession>) => void;
 }) {
-  const [query, setQuery] = useState('');
-  const [kind, setKind] = useState<SearchKind>(0);
-  const [order, setOrder] = useState('mr');
-  const [time, setTime] = useState('a');
-  const [result, setResult] = useState<SearchPage | null>(null);
+  const { query, kind, order, time, result } = session;
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const requestSequence = useRef(0);
 
-  const refreshHistory = () => void listSearchHistory().then(setHistory);
-  useEffect(refreshHistory, []);
+  const refreshHistory = useCallback(() => {
+    void listSearchHistory().then(setHistory);
+  }, []);
+  useEffect(refreshHistory, [refreshHistory]);
+  useEffect(() => () => {
+    requestSequence.current += 1;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!result || session.scrollY <= 0) return;
+    const target = session.scrollY;
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      window.scrollTo({ top: target, left: 0, behavior: 'auto' });
+      secondFrame = requestAnimationFrame(() => {
+        window.scrollTo({ top: target, left: 0, behavior: 'auto' });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [result, session.scrollY]);
 
   const submit = useCallback(async (value = query, nextKind = kind) => {
     const clean = value.trim();
     if (!clean) return;
     const requestId = ++requestSequence.current;
-    setQuery(clean);
-    setKind(nextKind);
+    updateSession({ query: clean, kind: nextKind });
     setLoading(true);
     setError(null);
     try {
       const page = await jmClient.search(clean, { kind: nextKind, order, time });
       if (requestId !== requestSequence.current) return;
-      setResult(page);
+      updateSession({ result: page, scrollY: 0 });
       await addSearchHistory({ query: clean, kind: nextKind, searchedAt: Date.now() });
       refreshHistory();
     } catch (cause) {
@@ -240,13 +278,13 @@ function SearchView({
     } finally {
       if (requestId === requestSequence.current) setLoading(false);
     }
-  }, [query, kind, order, time]);
+  }, [query, kind, order, time, refreshHistory, updateSession]);
 
   useEffect(() => {
     if (!initial) return;
     void submit(initial.query, initial.kind);
     clearInitial();
-  }, [initial]);
+  }, [initial, submit, clearInitial]);
 
   return (
     <section class="screen search-screen">
@@ -255,12 +293,12 @@ function SearchView({
         <span aria-hidden="true">⌕</span>
         <input
           value={query}
-          onInput={(event) => setQuery(event.currentTarget.value)}
+          onInput={(event) => updateSession({ query: event.currentTarget.value })}
           placeholder="编号、JM123、链接或名称"
           aria-label="搜索漫画"
           enterKeyHint="search"
         />
-        {query && <button type="button" class="clear-button" aria-label="清空搜索" onClick={() => setQuery('')}>×</button>}
+        {query && <button type="button" class="clear-button" aria-label="清空搜索" onClick={() => updateSession({ query: '' })}>×</button>}
         <button type="submit" class="search-submit">搜索</button>
       </form>
       <div class="search-kind" role="tablist" aria-label="搜索范围">
@@ -272,17 +310,17 @@ function SearchView({
             class={kind === item.value ? 'selected' : ''}
             onClick={() => {
               if (item.value === kind) return;
-              setKind(item.value);
+              updateSession({ kind: item.value });
               if (query.trim()) void submit(query, item.value);
             }}
           >{item.label}</button>
         ))}
       </div>
       <div class="filter-bar compact">
-        <select aria-label="搜索排序" value={order} onChange={(event) => setOrder(event.currentTarget.value)}>
+        <select aria-label="搜索排序" value={order} onChange={(event) => updateSession({ order: event.currentTarget.value })}>
           {ORDER_OPTIONS.map((item) => <option value={item.value}>{item.label}</option>)}
         </select>
-        <select aria-label="搜索时间" value={time} onChange={(event) => setTime(event.currentTarget.value)}>
+        <select aria-label="搜索时间" value={time} onChange={(event) => updateSession({ time: event.currentTarget.value })}>
           {TIME_OPTIONS.map((item) => <option value={item.value}>{item.label}</option>)}
         </select>
       </div>
@@ -297,7 +335,14 @@ function SearchView({
             </div>
           </div>
           {result.items.length
-            ? <AlbumGrid albums={result.items} settings={settings} onOpen={openAlbum} />
+            ? <AlbumGrid
+                albums={result.items}
+                settings={settings}
+                onOpen={(album) => {
+                  updateSession({ scrollY: window.scrollY });
+                  openAlbum(album);
+                }}
+              />
             : <EmptyState title="没有找到结果" description="试试作者、标签或更短的关键词。" />}
         </>
       )}
@@ -922,9 +967,13 @@ export function App() {
   const [settings, setSettingsState] = useState<ReaderSettings | null>(null);
   const [toast, setToast] = useState('');
   const [pendingSearch, setPendingSearch] = useState<{ query: string; kind: SearchKind } | null>(null);
+  const [searchSession, setSearchSession] = useState<SearchSession>(EMPTY_SEARCH_SESSION);
   const notify = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast((current) => current === message ? '' : current), 2800);
+  }, []);
+  const updateSearchSession = useCallback((patch: Partial<SearchSession>) => {
+    setSearchSession((current) => ({ ...current, ...patch }));
   }, []);
 
   useEffect(() => {
@@ -997,6 +1046,8 @@ export function App() {
             openAlbum={openAlbum}
             initial={pendingSearch}
             clearInitial={() => setPendingSearch(null)}
+            session={searchSession}
+            updateSession={updateSearchSession}
           />
         )}
         {tab === 'library' && <LibraryView settings={settings} openAlbum={openAlbum} notify={notify} />}
