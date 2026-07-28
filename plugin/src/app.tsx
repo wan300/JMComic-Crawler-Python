@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   AlbumGrid,
   Cover,
@@ -216,6 +216,7 @@ function SearchView({
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const requestSequence = useRef(0);
 
   const refreshHistory = () => void listSearchHistory().then(setHistory);
   useEffect(refreshHistory, []);
@@ -223,19 +224,21 @@ function SearchView({
   const submit = useCallback(async (value = query, nextKind = kind) => {
     const clean = value.trim();
     if (!clean) return;
+    const requestId = ++requestSequence.current;
     setQuery(clean);
     setKind(nextKind);
     setLoading(true);
     setError(null);
     try {
       const page = await jmClient.search(clean, { kind: nextKind, order, time });
+      if (requestId !== requestSequence.current) return;
       setResult(page);
       await addSearchHistory({ query: clean, kind: nextKind, searchedAt: Date.now() });
       refreshHistory();
     } catch (cause) {
-      setError(cause);
+      if (requestId === requestSequence.current) setError(cause);
     } finally {
-      setLoading(false);
+      if (requestId === requestSequence.current) setLoading(false);
     }
   }, [query, kind, order, time]);
 
@@ -267,7 +270,11 @@ function SearchView({
             role="tab"
             aria-selected={kind === item.value}
             class={kind === item.value ? 'selected' : ''}
-            onClick={() => setKind(item.value)}
+            onClick={() => {
+              if (item.value === kind) return;
+              setKind(item.value);
+              if (query.trim()) void submit(query, item.value);
+            }}
           >{item.label}</button>
         ))}
       </div>

@@ -78,6 +78,23 @@ test('搜索、详情、双阅读模式、下载与离线快照闭环', async ({
   await page.getByLabel('搜索漫画').fill('示例');
   await page.locator('.search-box').getByRole('button', { name: '搜索', exact: true }).click();
   await expect(page.getByText(/个结果/)).toBeVisible();
+  await page.getByRole('tab', { name: '作者' }).click();
+  await page.waitForFunction(async () => {
+    const request = indexedDB.open('jmcomic-reader');
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const searches = await new Promise<Array<{ query?: string; kind?: number }>>((resolve, reject) => {
+      const tx = db.transaction('searchHistory', 'readonly');
+      const getRequest = tx.objectStore('searchHistory').getAll();
+      getRequest.onsuccess = () => resolve(getRequest.result);
+      getRequest.onerror = () => reject(getRequest.error);
+    });
+    db.close();
+    return searches.some((item) => item.query === '示例' && item.kind === 2);
+  });
+  await page.getByRole('tab', { name: '站内' }).click();
   await page.locator('.album-card-button').first().click();
   await expect(page.locator('.detail-summary h1')).toContainText('示例');
   await page.getByRole('button', { name: /开始阅读|续读/ }).click();
