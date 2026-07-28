@@ -91,6 +91,12 @@ test('搜索、详情、双阅读模式、下载与离线快照闭环', async ({
   expect(horizontalBounds!.height).toBeGreaterThan(1);
   await page.locator('.horizontal-reader').press('ArrowRight');
   await expect(page.locator('.page-indicator')).toContainText('2 / 5');
+  const sideProgress = page.getByRole('status', { name: '阅读进度：第 2 页，共 5 页' });
+  await expect(sideProgress).toBeVisible();
+  await page.locator('.horizontal-reader').click({ position: { x: 195, y: 420 } });
+  await expect(sideProgress).toBeHidden();
+  await page.locator('.horizontal-reader').click({ position: { x: 195, y: 420 } });
+  await expect(page.getByRole('status', { name: '阅读进度：第 2 页，共 5 页' })).toBeVisible();
   await page.getByRole('button', { name: '下载当前章' }).click();
   await expect(page.getByText('当前章已加入下载队列')).toBeVisible();
   await page.waitForFunction(async () => {
@@ -115,6 +121,7 @@ test('搜索、详情、双阅读模式、下载与离线快照闭环', async ({
   await page.getByRole('button', { name: /续读/ }).click();
   await expect(page.locator('.horizontal-reader')).toBeVisible();
   await expect(page.locator('.page-indicator')).toContainText('2 / 5');
+  await expect(page.getByRole('status', { name: '阅读进度：第 2 页，共 5 页' })).toBeVisible();
 });
 
 test('连续竖读会恢复到保存的续读页面', async ({ page }, testInfo) => {
@@ -130,6 +137,7 @@ test('连续竖读会恢复到保存的续读页面', async ({ page }, testInfo)
   await expect(target.locator('.comic-page:not(.image-placeholder)')).toBeVisible();
   await target.scrollIntoViewIfNeeded();
   await expect(target).toBeInViewport();
+  await expect(page.getByRole('status', { name: '阅读进度：第 4 页，共 5 页' })).toBeVisible();
   await page.waitForFunction(async () => {
     const request = indexedDB.open('jmcomic-reader');
     const db = await new Promise<IDBDatabase>((resolve, reject) => {

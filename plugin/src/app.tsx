@@ -820,7 +820,7 @@ function ReaderView({
   const next = album.chapters[chapterIndex + 1];
 
   return (
-    <main class={`reader-shell ${settings.readerMode}`} onClick={(event) => {
+    <main class={`reader-shell ${settings.readerMode}${controls ? ' controls-visible' : ''}`} onClick={(event) => {
       if ((event.target as HTMLElement).closest('button, select')) return;
       setControls((value) => !value);
     }}>
@@ -836,6 +836,16 @@ function ReaderView({
         <VerticalReader album={album} chapter={chapter} settings={settings} initialPage={initialPage} onPageChange={setPage} />
       ) : (
         <HorizontalReader album={album} chapter={chapter} settings={settings} initialPage={initialPage} onPageChange={setPage} />
+      )}
+      {controls && (
+        <div
+          class="reader-page-status"
+          role="status"
+          aria-label={`阅读进度：第 ${currentPage + 1} 页，共 ${chapter.images.length} 页`}
+        >
+          <strong>{currentPage + 1}</strong>
+          <span>/ {chapter.images.length}</span>
+        </div>
       )}
       <div class={`reader-toolbar bottom ${controls ? 'visible' : ''}`}>
         <button type="button" disabled={!previous} onClick={() => previous && navigate(`read/${album.id}/${previous.id}`)}>上一章</button>
