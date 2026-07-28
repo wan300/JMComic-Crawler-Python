@@ -43,6 +43,17 @@ describe('raw API adapters', () => {
     expect(chapter.images[0]).toBe('https://cdn-msp.jmapiproxy1.cc/media/photos/124/00001.webp');
   });
 
+  it('keeps a single chapter associated with its own album when series_id is zero', () => {
+    const chapter = adaptChapter({
+      id: '89',
+      series_id: '0',
+      name: '单本漫画',
+      images: ['00001.webp'],
+      series: [],
+    });
+    expect(chapter).toMatchObject({ id: '89', albumId: '89', index: 1 });
+  });
+
   it('provides stable fallbacks for sparse search rows', () => {
     expect(adaptAlbumSummary({ id: 7, name: '稀疏记录' })).toMatchObject({
       id: '7',
@@ -50,5 +61,22 @@ describe('raw API adapters', () => {
       author: ['未知作者'],
       tags: [],
     });
+  });
+
+  it('treats an album without a series list as a readable single chapter', () => {
+    const album = adaptAlbum({
+      id: '89',
+      name: '单本漫画',
+      author: ['作者'],
+      series: [],
+      pub_date: '2020-01-02',
+    });
+    expect(album.chapters).toEqual([{
+      id: '89',
+      albumId: '89',
+      index: 1,
+      title: '单本漫画',
+      publishedAt: '2020-01-02',
+    }]);
   });
 });

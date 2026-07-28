@@ -217,6 +217,43 @@ test('连续竖读多页同时可见时按阅读锚点选择唯一页码', async
   await expect(page.getByRole('status', { name: '阅读进度：第 2 页，共 5 页' })).toBeVisible();
 });
 
+test('相关推荐跳转置顶且单章节漫画可以开始阅读', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone', '详情导航竞态只需在手机项目运行一次');
+  await prepare(page);
+  await page.evaluate(() => { location.hash = '#/album/438516'; });
+  await expect(page.locator('.detail-id')).toHaveText('JM438516');
+  await expect(page.locator('.detail-section .album-card-button').first()).toBeVisible();
+
+  await page.evaluate(() => { location.hash = '#/discover'; });
+  await expect(page.getByRole('heading', { name: '发现', level: 1 })).toBeVisible();
+  await page.evaluate(() => {
+    const bridge = window.BjtuService!;
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = async (method, params = {}) => {
+      const url = String(params.url || '');
+      if (method === 'app.http_request' && url.includes('/album?') && url.includes('id=438516')) {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      }
+      return invoke(method, params);
+    };
+    location.hash = '#/album/438516';
+  });
+
+  await expect(page.locator('.detail-id')).toHaveText('JM438516');
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await page.locator('.detail-section .album-card-button').first().click();
+
+  await expect(page.locator('.detail-id')).toHaveText('JM438517');
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await page.waitForTimeout(1_000);
+  await expect(page.locator('.detail-id')).toHaveText('JM438517');
+  const startReading = page.locator('.detail-actions .button.primary');
+  await expect(startReading).toBeEnabled();
+  await startReading.click();
+  await expect(page.locator('.vertical-reader')).toBeVisible();
+});
+
 test('键盘路径与基础可访问性', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'phone', '可访问性扫描只需运行一次');
   await prepare(page);

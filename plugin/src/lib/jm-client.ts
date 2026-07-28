@@ -58,6 +58,25 @@ export function adaptAlbum(rawValue: unknown): Album {
   const summary = adaptAlbumSummary(raw);
   const chaptersRaw = Array.isArray(raw.series) ? raw.series : [];
   const relatedRaw = Array.isArray(raw.related_list) ? raw.related_list : [];
+  const chapters = chaptersRaw.map((chapterValue, index) => {
+    const chapter = objectValue(chapterValue);
+    return {
+      id: String(chapter.id || ''),
+      albumId: summary.id,
+      index: numberValue(chapter.sort) || index + 1,
+      title: String(chapter.name || `第 ${index + 1} 话`),
+      publishedAt: chapter.pub_date ? String(chapter.pub_date) : undefined,
+    };
+  });
+  if (!chapters.length && summary.id) {
+    chapters.push({
+      id: summary.id,
+      albumId: summary.id,
+      index: 1,
+      title: summary.name,
+      publishedAt: raw.pub_date ? String(raw.pub_date) : undefined,
+    });
+  }
   return {
     ...summary,
     author: textArray(raw.author || raw.authors).length
@@ -69,16 +88,7 @@ export function adaptAlbum(rawValue: unknown): Album {
     likes: numberValue(raw.likes),
     views: numberValue(raw.total_views || raw.views),
     commentCount: numberValue(raw.comment_total || raw.comment_count),
-    chapters: chaptersRaw.map((chapterValue, index) => {
-      const chapter = objectValue(chapterValue);
-      return {
-        id: String(chapter.id || ''),
-        albumId: summary.id,
-        index: numberValue(chapter.sort) || index + 1,
-        title: String(chapter.name || `第 ${index + 1} 话`),
-        publishedAt: chapter.pub_date ? String(chapter.pub_date) : undefined,
-      };
-    }),
+    chapters,
     related: relatedRaw.map(adaptAlbumSummary),
     publishedAt: raw.pub_date ? String(raw.pub_date) : undefined,
   };
@@ -87,7 +97,8 @@ export function adaptAlbum(rawValue: unknown): Album {
 export function adaptChapter(rawValue: unknown, imageOrigin = DEFAULT_IMAGE_ORIGIN): Chapter {
   const raw = objectValue(rawValue);
   const id = String(raw.id || raw.photo_id || '');
-  const albumId = String(raw.series_id || raw.album_id || id);
+  const rawAlbumId = String(raw.series_id || raw.album_id || '');
+  const albumId = !rawAlbumId || numberValue(rawAlbumId) === 0 ? id : rawAlbumId;
   const series = Array.isArray(raw.series) ? raw.series : [];
   const matching = series.map(objectValue).find((entry) => String(entry.id) === id);
   const filenames = Array.isArray(raw.images) ? raw.images.map(String) : [];
@@ -217,6 +228,9 @@ export class JmClient {
     const raw = await this.request('/album', { id });
     const album = adaptAlbum(raw);
     if (!album.id || !album.name) throw new JmError('not_found', `没有找到 JM${id}。`);
+    if (album.id !== id) {
+      throw new JmError('invalid_response', `JM${id} 返回了不匹配的漫画资料，请重试。`);
+    }
     return album;
   }
 

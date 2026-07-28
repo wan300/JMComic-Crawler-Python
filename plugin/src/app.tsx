@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   AlbumGrid,
   Cover,
@@ -647,28 +647,45 @@ function AlbumDetailView({
   const [groups, setGroups] = useState<FavoriteGroup[]>([]);
   const [progress, setProgress] = useState<ReadingProgress | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     setError(null);
+    setAlbum(null);
+    setFavoriteState(null);
+    setGroups([]);
+    setProgress(null);
     const [cached, savedFavorite, savedGroups, savedProgress] = await Promise.all([
       getAlbum(albumId),
       getFavorite(albumId),
       listGroups(),
       getProgress(albumId),
     ]);
+    if (sequence !== loadSequence.current) return;
     if (cached) setAlbum(cached);
     setFavoriteState(savedFavorite || null);
     setGroups(savedGroups);
     setProgress(savedProgress || null);
     try {
       const fresh = await jmClient.album(albumId);
+      if (sequence !== loadSequence.current) return;
       setAlbum(fresh);
       await saveAlbum(fresh);
     } catch (cause) {
+      if (sequence !== loadSequence.current) return;
       if (!cached) setError(cause);
     }
   }, [albumId]);
-  useEffect(() => { void load(); }, [load]);
+  useLayoutEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [albumId]);
+  useEffect(() => {
+    void load();
+    return () => {
+      loadSequence.current += 1;
+    };
+  }, [load]);
 
   if (error && !album) return <section class="screen"><ScreenHeader title={`JM${albumId}`} back={back} /><ErrorState error={error} retry={load} /></section>;
   if (!album) return <section class="screen"><Spinner label="正在载入漫画资料" /></section>;

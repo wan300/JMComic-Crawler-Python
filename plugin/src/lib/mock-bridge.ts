@@ -26,20 +26,22 @@ function albumData(id: string) {
     works: ['原创'],
     actors: ['店员', '旅人'],
     tags: ['剧情', '治愈', '彩色'],
-    series: [1, 2, 3].map((sort) => ({
-      id: String(Number(id) * 10 + sort),
-      sort: String(sort),
-      name: sort === 1 ? '序章 · 雨声' : `第 ${sort} 话`,
-    })),
+    series: id === '438517'
+      ? []
+      : [1, 2, 3].map((sort) => ({
+        id: String(Number(id) * 10 + sort),
+        sort: String(sort),
+        name: sort === 1 ? '序章 · 雨声' : `第 ${sort} 话`,
+      })),
     related_list: albums.slice(1, 5),
   };
 }
 
 function chapterData(id: string) {
-  const albumId = id.slice(0, -1) || '438516';
+  const albumId = id === '438517' ? id : id.slice(0, -1) || '438516';
   return {
     id,
-    series_id: albumId,
+    series_id: id === '438517' ? '0' : albumId,
     name: `章节 JM${id}`,
     tags: ['剧情', '彩色'],
     images: ['00001.webp', '00002.webp', '00003.webp', '00004.webp', '00005.webp'],
