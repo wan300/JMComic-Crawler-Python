@@ -8,7 +8,6 @@ on:
       - "package.json"
       - "package-lock.json"
       - "bjtu-plugin.json"
-      - "bjtu-plugin.dev.json"
       - "bjtu-marketplace.json"
       - ".github/workflows/plugin-ci.yml"
   pull_request:
@@ -18,7 +17,6 @@ on:
       - "package.json"
       - "package-lock.json"
       - "bjtu-plugin.json"
-      - "bjtu-plugin.dev.json"
       - "bjtu-marketplace.json"
       - ".github/workflows/plugin-ci.yml"
   workflow_dispatch:
@@ -90,6 +88,7 @@ jobs:
       - name: Verify deterministic official pack
         run: |
           CLI=.bjtu-host/plugin-tooling/packages/plugin-cli/dist/bin.js
+          test ! -e bjtu-plugin.dev.json
           node "$CLI" pack . --out plugin-a.zip
           node "$CLI" pack . --out plugin-b.zip
           cmp plugin-a.zip plugin-b.zip

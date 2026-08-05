@@ -24,6 +24,7 @@ develop-eggs/
 /output/playwright/results/
 /output/playwright/report/
 /output/android-qa/
+/bjtu-plugin.dev.json
 /.bjtu-host/
 downloads/
 eggs/

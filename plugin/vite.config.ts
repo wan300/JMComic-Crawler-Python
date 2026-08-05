@@ -13,7 +13,7 @@ interface DevelopmentConfig {
 
 const repositoryRoot = resolve(import.meta.dirname, '..');
 const development = JSON.parse(
-  readFileSync(resolve(repositoryRoot, 'bjtu-plugin.dev.json'), 'utf8'),
+  readFileSync(resolve(import.meta.dirname, 'bjtu-plugin.dev.json'), 'utf8'),
 ) as DevelopmentConfig;
 const androidHost = process.env.BJTU_ANDROID_HMR === '1';
 const port = Number(process.env.BJTU_VITE_PORT ?? development.hmr?.port ?? 5173);

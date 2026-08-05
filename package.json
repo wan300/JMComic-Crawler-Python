@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "vite --config plugin/vite.config.ts",
+    "prepare:bjtu-dev": "node plugin/scripts/prepare-bjtu-dev.mjs",
     "test": "vitest run --config plugin/vite.config.ts",
     "test:watch": "vitest --config plugin/vite.config.ts",
     "test:e2e": "playwright test --config plugin/playwright.config.ts",
