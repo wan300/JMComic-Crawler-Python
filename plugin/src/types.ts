@@ -112,11 +112,10 @@ export interface CachedImage {
   albumId: string;
   chapterId: string;
   page: number;
-  url: string;
-  blob: Blob;
+  sourceUrl: string;
+  contentType: string;
   bytes: number;
   kind: CacheKind;
-  corsReadable: boolean;
   accessedAt: number;
   createdAt: number;
 }
@@ -157,16 +156,43 @@ export interface BackupPreview {
 export interface StorageStats {
   usage: number;
   quota: number;
+  globalQuota: number;
   available: number;
   temporaryBytes: number;
   pinnedBytes: number;
   budget: number;
 }
 
-export interface HttpBridgePayload {
-  statusCode: number;
-  data: unknown;
-  header?: Record<string, string>;
+export interface HostThemeState {
+  colorScheme: 'light' | 'dark';
+  reducedMotion: boolean;
+  highContrast: boolean;
+}
+
+export interface HostViewportState {
+  width: number;
+  height: number;
+  density: number;
+  fontScale: number;
+  orientation: 'portrait' | 'landscape';
+  safeAreaTop: number;
+  safeAreaRight: number;
+  safeAreaBottom: number;
+  safeAreaLeft: number;
+  imeHeight: number;
+}
+
+export interface HostNetworkState {
+  online: boolean;
+  validated: boolean;
+  metered: boolean;
+  transport: string;
+}
+
+export interface HostRuntimeState {
+  theme: HostThemeState;
+  viewport: HostViewportState;
+  network: HostNetworkState;
 }
 
 export interface RawApiEnvelope {
@@ -176,17 +202,13 @@ export interface RawApiEnvelope {
 }
 
 declare global {
+  const __BJTU_PLUGIN_ANDROID_HOST__: boolean;
+  const __BJTU_PLUGIN_MOCK_SCENARIO__: Record<string, unknown>;
   interface Window {
-    BjtuService?: {
-      invoke(
-        method: string,
-        params?: Record<string, unknown>,
-      ): Promise<{
-        ok: boolean;
-        data?: unknown;
-        error?: { code: string; message: string };
-      }>;
+    __JMCR_V3_TEST__?: {
+      kvValues(): Record<string, unknown>;
+      cacheKeys(): string[];
+      emit(event: string, data: unknown): Promise<boolean>;
     };
-    __JMCR_MOCK__?: boolean;
   }
 }

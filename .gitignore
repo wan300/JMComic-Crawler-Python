@@ -15,11 +15,15 @@ __pycache__/
 build/
 develop-eggs/
 /python-dist/
+/node_modules/
 /plugin/node_modules/
 /plugin/test-results/
 /plugin/playwright-report/
+/test-results/
+/playwright-report/
 /output/playwright/results/
 /output/playwright/report/
+/output/android-qa/
 /.bjtu-host/
 downloads/
 eggs/

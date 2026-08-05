@@ -166,6 +166,7 @@ export function ComicImage({
   const [src, setSrc] = useState('');
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     if (!active) return;
@@ -187,7 +188,7 @@ export function ComicImage({
       controller.abort();
       revoke?.();
     };
-  }, [active, albumId, chapterId, page, url]);
+  }, [active, albumId, chapterId, page, url, retryKey]);
 
   if (error) {
     return (
@@ -197,6 +198,7 @@ export function ComicImage({
           setError(null);
           setSrc('');
           setSize(null);
+          setRetryKey((value) => value + 1);
         }}>重试</button>
       </div>
     );

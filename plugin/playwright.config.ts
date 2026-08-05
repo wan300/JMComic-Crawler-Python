@@ -61,6 +61,7 @@ export default defineConfig({
   ],
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 47651 --strictPort',
+    cwd: '..',
     url: 'http://127.0.0.1:47651/?mock=1',
     reuseExistingServer: false,
     timeout: 30_000,

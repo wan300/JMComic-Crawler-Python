@@ -10,6 +10,36 @@ const mockImage = `
   <rect x="76" y="603" width="320" height="10" rx="5" fill="#fff" opacity=".45"/>
 </svg>`;
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    const blocked = (name: string) => () => {
+      throw new Error(`${name} is disabled for Manifest v3 browser tests`);
+    };
+    Object.defineProperty(window, 'indexedDB', { configurable: true, get: blocked('indexedDB') });
+    Object.defineProperty(window, 'localStorage', { configurable: true, get: blocked('localStorage') });
+    Object.defineProperty(window, 'sessionStorage', { configurable: true, get: blocked('sessionStorage') });
+    Object.defineProperty(window, 'caches', { configurable: true, get: blocked('Cache Storage') });
+    Object.defineProperty(navigator, 'storage', { configurable: true, get: blocked('navigator.storage') });
+    Object.defineProperty(document, 'cookie', {
+      configurable: true,
+      get: () => '',
+      set: blocked('Cookie'),
+    });
+    Object.defineProperty(window, 'Worker', {
+      configurable: true,
+      value: class BlockedWorker {
+        constructor() {
+          throw new Error('Worker is disabled for Manifest v3 browser tests');
+        }
+      },
+    });
+  });
+});
+
+async function kvValues(page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate(() => window.__JMCR_V3_TEST__?.kvValues() || {});
+}
+
 async function prepare(page: Page) {
   await page.route('**/media/**', (route) => route.fulfill({
     status: 200,
@@ -79,21 +109,13 @@ test('搜索、详情、双阅读模式、下载与离线快照闭环', async ({
   await page.locator('.search-box').getByRole('button', { name: '搜索', exact: true }).click();
   await expect(page.getByText(/个结果/)).toBeVisible();
   await page.getByRole('tab', { name: '作者' }).click();
-  await page.waitForFunction(async () => {
-    const request = indexedDB.open('jmcomic-reader');
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    const searches = await new Promise<Array<{ query?: string; kind?: number }>>((resolve, reject) => {
-      const tx = db.transaction('searchHistory', 'readonly');
-      const getRequest = tx.objectStore('searchHistory').getAll();
-      getRequest.onsuccess = () => resolve(getRequest.result);
-      getRequest.onerror = () => reject(getRequest.error);
-    });
-    db.close();
+  await expect.poll(async () => {
+    const values = await kvValues(page);
+    const searches = Object.values(
+      (values['v1/search/all'] || {}) as Record<string, { query?: string; kind?: number }>,
+    );
     return searches.some((item) => item.query === '示例' && item.kind === 2);
-  });
+  }).toBe(true);
   await page.getByRole('tab', { name: '站内' }).click();
   await page.locator('.album-card-button').first().click();
   await expect(page.locator('.detail-summary h1')).toContainText('示例');
@@ -116,22 +138,20 @@ test('搜索、详情、双阅读模式、下载与离线快照闭环', async ({
   await expect(page.getByRole('status', { name: '阅读进度：第 2 页，共 5 页' })).toBeVisible();
   await page.getByRole('button', { name: '下载当前章' }).click();
   await expect(page.getByText('当前章已加入下载队列')).toBeVisible();
-  await page.waitForFunction(async () => {
-    const request = indexedDB.open('jmcomic-reader');
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    const count = await new Promise<number>((resolve, reject) => {
-      const tx = db.transaction('images', 'readonly');
-      const countRequest = tx.objectStore('images').count();
-      countRequest.onsuccess = () => resolve(countRequest.result);
-      countRequest.onerror = () => reject(countRequest.error);
-    });
-    db.close();
-    return count >= 5;
-  });
-  await page.evaluate(() => { delete window.BjtuService; });
+  await expect.poll(async () => {
+    const values = await kvValues(page);
+    return Object.entries(values)
+      .filter(([key]) => key.startsWith('v1/images/'))
+      .flatMap(([, bucket]) => Object.values(bucket as Record<string, unknown>))
+      .filter((image) => (image as { kind?: string }).kind === 'pinned')
+      .length;
+  }).toBeGreaterThanOrEqual(5);
+  await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('network', {
+    online: false,
+    validated: false,
+    metered: false,
+    transport: 'none',
+  }));
   await page.route('**/media/**', (route) => route.abort());
   await page.getByRole('button', { name: '返回漫画详情' }).click();
   await expect(page.locator('.detail-summary h1')).toBeVisible();
@@ -160,8 +180,7 @@ test('漫画详情返回保留搜索结果且重复搜索词只显示一次', as
   await submit.click();
   await expect(page.locator('.search-screen .section-heading h2')).toHaveText('“元素”');
 
-  await page.reload();
-  await expect(page.getByRole('heading', { name: '搜索', level: 1 })).toBeVisible();
+  await page.getByRole('button', { name: '清空搜索' }).click();
   const terms = page.locator('.history-list button > span:nth-child(2)');
   await expect(terms).toHaveCount(2);
   await expect(terms.nth(0)).toHaveText('元素');
@@ -191,25 +210,17 @@ test('连续竖读会恢复到保存的续读页面', async ({ page }, testInfo)
   await page.getByRole('button', { name: /开始阅读|续读/ }).click();
 
   const target = page.locator('[data-reader-page="3"]');
-  await expect(target.locator('.comic-page:not(.image-placeholder)')).toBeVisible();
   await target.scrollIntoViewIfNeeded();
+  await expect(target.locator('.comic-page:not(.image-placeholder)')).toBeVisible();
   await expect(target).toBeInViewport();
   await expect(page.getByRole('status', { name: '阅读进度：第 4 页，共 5 页' })).toBeVisible();
-  await page.waitForFunction(async () => {
-    const request = indexedDB.open('jmcomic-reader');
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    const progress = await new Promise<{ page?: number } | undefined>((resolve, reject) => {
-      const tx = db.transaction('progress', 'readonly');
-      const getRequest = tx.objectStore('progress').get('438516');
-      getRequest.onsuccess = () => resolve(getRequest.result);
-      getRequest.onerror = () => reject(getRequest.error);
-    });
-    db.close();
-    return progress?.page === 3;
-  });
+  await expect.poll(async () => {
+    const values = await kvValues(page);
+    return Object.entries(values)
+      .filter(([key]) => key.startsWith('v1/progress/'))
+      .flatMap(([, bucket]) => Object.values(bucket as Record<string, { albumId?: string; page?: number }>))
+      .find((progress) => progress.albumId === '438516')?.page;
+  }).toBe(3);
 
   await page.getByRole('button', { name: '返回漫画详情' }).click();
   await expect(page.getByRole('button', { name: /续读 · 第 4 页/ })).toBeVisible();
@@ -266,18 +277,7 @@ test('相关推荐跳转置顶且单章节漫画可以开始阅读', async ({ pa
 
   await page.evaluate(() => { location.hash = '#/discover'; });
   await expect(page.getByRole('heading', { name: '发现', level: 1 })).toBeVisible();
-  await page.evaluate(() => {
-    const bridge = window.BjtuService!;
-    const invoke = bridge.invoke.bind(bridge);
-    bridge.invoke = async (method, params = {}) => {
-      const url = String(params.url || '');
-      if (method === 'app.http_request' && url.includes('/album?') && url.includes('id=438516')) {
-        await new Promise((resolve) => setTimeout(resolve, 900));
-      }
-      return invoke(method, params);
-    };
-    location.hash = '#/album/438516';
-  });
+  await page.evaluate(() => { location.hash = '#/album/438516'; });
 
   await expect(page.locator('.detail-id')).toHaveText('JM438516');
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -319,4 +319,43 @@ test('剪贴板 JMCR1 备份预览与导入', async ({ page }, testInfo) => {
   await expect(page.getByText('备份预览', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '合并导入' }).click();
   await expect(page.getByText('已按更新时间合并备份')).toBeVisible();
+});
+
+test('宿主 lifecycle 主题与返回键遵循 v3 消费顺序', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone', '宿主 lifecycle 只需在手机项目运行一次');
+  await prepare(page);
+  await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('theme', {
+    colorScheme: 'dark',
+    reducedMotion: true,
+    highContrast: true,
+  }));
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.locator('html')).toHaveAttribute('data-reduce-motion', 'true');
+  await expect(page.locator('html')).toHaveAttribute('data-high-contrast', 'true');
+
+  await page.getByRole('button', { name: '搜索' }).click();
+  await page.getByLabel('搜索漫画').fill('示例');
+  await page.locator('.search-box').getByRole('button', { name: '搜索', exact: true }).click();
+  await page.locator('.album-card-button').first().click();
+  await expect(page.locator('.detail-summary h1')).toBeVisible();
+  expect(await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('back', {}))).toBe(true);
+  await expect(page).toHaveURL(/#\/search$/);
+  await expect(page.locator('.album-card')).not.toHaveCount(0);
+
+  await page.locator('.album-card-button').first().click();
+  await page.getByRole('button', { name: /开始阅读|续读/ }).click();
+  await page.getByRole('button', { name: '下一章' }).click();
+  await expect(page).toHaveURL(/#\/read\/438516\/4385162$/);
+  await expect(page.locator('.reader-toolbar.top')).toHaveClass(/visible/);
+  expect(await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('back', {}))).toBe(true);
+  await expect(page.locator('.reader-toolbar.top')).not.toHaveClass(/visible/);
+  expect(await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('back', {}))).toBe(true);
+  await expect(page.locator('.detail-summary h1')).toBeVisible();
+  expect(await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('back', {}))).toBe(true);
+  await expect(page).toHaveURL(/#\/search$/);
+  await expect(page.locator('.album-card')).not.toHaveCount(0);
+
+  await page.evaluate(() => { location.hash = '#/discover'; });
+  await expect(page.getByRole('heading', { name: '发现', level: 1 })).toBeVisible();
+  expect(await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('back', {}))).toBe(false);
 });

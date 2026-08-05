@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { Album, Chapter, ReaderSettings } from './types';
 import { ComicImage } from './components';
 import { saveProgress } from './lib/db';
+import { getHostRuntimeState, subscribeHostRuntime } from './lib/host';
 
 interface ReaderProps {
   album: Album;
@@ -126,6 +127,13 @@ export function VerticalReader({
   const restoring = useRef(false);
   const resumeTarget = useRef(0);
   const reportedPage = useRef(normalizeReaderPage(initialPage, chapter.images.length));
+  const [activePages, setActivePages] = useState<Set<number>>(
+    () => new Set([normalizeReaderPage(initialPage, chapter.images.length)]),
+  );
+
+  useEffect(() => {
+    setActivePages(new Set([normalizeReaderPage(initialPage, chapter.images.length)]));
+  }, [chapter.id, chapter.images.length]);
 
   useEffect(() => {
     const targetPage = normalizeReaderPage(initialPage, chapter.images.length);
@@ -174,7 +182,7 @@ export function VerticalReader({
     window.addEventListener('keydown', stop, true);
     timeout = window.setTimeout(stop, 12_000);
     return stop;
-  }, [chapter.id, chapter.images.length, initialPage]);
+  }, [chapter.id, chapter.images.length]);
 
   useEffect(() => {
     const root = container.current;
@@ -184,7 +192,8 @@ export function VerticalReader({
 
     const evaluate = () => {
       frame = 0;
-      const viewportHeight = window.visualViewport?.height
+      const viewportHeight = getHostRuntimeState().viewport.height
+        || window.visualViewport?.height
         || document.documentElement.clientHeight
         || window.innerHeight;
       const pages: VerticalPageBounds[] = [];
@@ -200,6 +209,15 @@ export function VerticalReader({
       }
       const page = selectVerticalReaderPage(pages, viewportHeight);
       if (page === null) return;
+      const visiblePages = restoring.current && page !== resumeTarget.current
+        ? [resumeTarget.current]
+        : pages.map((item) => item.page);
+      setActivePages((current) => {
+        if (visiblePages.every((visiblePage) => current.has(visiblePage))) return current;
+        const next = new Set(current);
+        for (const visiblePage of visiblePages) next.add(visiblePage);
+        return next;
+      });
       if (restoring.current && page !== resumeTarget.current) return;
       if (page === reportedPage.current) return;
       reportedPage.current = page;
@@ -213,6 +231,7 @@ export function VerticalReader({
     window.addEventListener('scroll', schedule, { passive: true });
     window.addEventListener('resize', schedule);
     window.visualViewport?.addEventListener('resize', schedule);
+    const unsubscribeHost = subscribeHostRuntime(schedule);
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
     observer?.observe(root);
     schedule();
@@ -222,8 +241,9 @@ export function VerticalReader({
       window.removeEventListener('scroll', schedule);
       window.removeEventListener('resize', schedule);
       window.visualViewport?.removeEventListener('resize', schedule);
+      unsubscribeHost();
     };
-  }, [chapter.id, chapter.images.length, initialPage, onPageChange]);
+  }, [chapter.id, chapter.images.length, onPageChange]);
 
   return (
     <div class="vertical-reader" ref={container}>
@@ -239,6 +259,7 @@ export function VerticalReader({
             page={page}
             url={url}
             scrambleId={chapter.scrambleId}
+            active={activePages.has(page)}
           />
         </div>
       ))}
@@ -265,7 +286,7 @@ export function HorizontalReader({
     animation.current = null;
     setOffset(0);
     setPage(normalizeReaderPage(initialPage, chapter.images.length));
-  }, [chapter.id, chapter.images.length, initialPage]);
+  }, [chapter.id, chapter.images.length]);
 
   useEffect(() => {
     const element = viewport.current;
@@ -279,10 +300,12 @@ export function HorizontalReader({
     };
     update();
     window.addEventListener('resize', update);
+    const unsubscribeHost = subscribeHostRuntime(update);
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
     observer?.observe(element);
     return () => {
       window.removeEventListener('resize', update);
+      unsubscribeHost();
       observer?.disconnect();
     };
   }, []);

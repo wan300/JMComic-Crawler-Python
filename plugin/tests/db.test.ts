@@ -1,9 +1,14 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import type { Album, CachedImage, ReadingProgress } from '../src/types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { BjtuPluginError, type BjtuPluginSdk } from '@bjtu-mis/plugin-sdk';
+import type { Album, CachedImage, Chapter, ReadingProgress } from '../src/types';
 import {
-  DATABASE_NAME,
-  getDatabase,
+  KV_MAX_MANAGED_KEYS,
+  STORE_BUCKETS,
+  bucketKey,
+  getAlbum,
+  getChapter,
   getProgress,
+  listImages,
   listDownloadJobs,
   listFavorites,
   listSearchHistory,
@@ -15,50 +20,84 @@ import {
   setFavorite,
   addSearchHistory,
   evictTemporaryBytes,
+  saveAlbum,
 } from '../src/lib/db';
 import { adaptiveBudget } from '../src/lib/cache';
 import { MIB } from '../src/constants';
+import { createMockHostSdk } from '../src/lib/mock-host';
+import { getHostSdk, initializeHost, resetHostForTests } from '../src/lib/host';
 
 beforeEach(async () => {
   await resetDatabaseForTests();
 });
 
-describe('IndexedDB migrations and durable state', () => {
-  it('creates all current stores from an empty database', async () => {
-    const db = await getDatabase();
-    expect([...db.objectStoreNames]).toEqual(expect.arrayContaining([
-      'albums', 'chapters', 'favorites', 'groups', 'history', 'progress',
-      'searchHistory', 'downloadJobs', 'images', 'settings',
-    ]));
+describe('Manifest v3 KV shards and durable state', () => {
+  it('fits every configured shard and singleton key inside the 708-key budget', () => {
+    const sharded = Object.values(STORE_BUCKETS).reduce((sum, count) => sum + count, 0);
+    expect(sharded + 3).toBe(707);
+    expect(KV_MAX_MANAGED_KEYS).toBeLessThanOrEqual(708);
+    expect(bucketKey('albums', '438516')).toMatch(/^v1\/albums\/[0-9a-f]{2}$/);
   });
 
-  it('upgrades a v1 database without losing a favorite', async () => {
-    const current = await getDatabase();
-    current.close();
-    await resetDatabaseForTests();
-    await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open(DATABASE_NAME, 1);
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        db.createObjectStore('albums', { keyPath: 'id' });
-        const chapters = db.createObjectStore('chapters', { keyPath: 'id' });
-        chapters.createIndex('byAlbum', 'albumId');
-        const favorites = db.createObjectStore('favorites', { keyPath: 'albumId' });
-        favorites.createIndex('byUpdatedAt', 'updatedAt');
-        favorites.createIndex('byGroup', 'groupId');
-        const history = db.createObjectStore('history', { keyPath: 'albumId' });
-        history.createIndex('byVisitedAt', 'visitedAt');
-        const progress = db.createObjectStore('progress', { keyPath: 'albumId' });
-        progress.createIndex('byUpdatedAt', 'updatedAt');
-        db.createObjectStore('settings', { keyPath: 'key' });
-        favorites.add({ albumId: '1', note: '', createdAt: 1, updatedAt: 1 });
-      };
-      request.onsuccess = () => { request.result.close(); resolve(); };
-      request.onerror = () => reject(request.error);
+  it('degrades an oversized remote album snapshot without losing its identity', async () => {
+    const album: Album = {
+      id: '438516',
+      name: 'large',
+      author: ['author'],
+      description: 'x'.repeat(300 * 1024),
+      coverUrl: '',
+      tags: [],
+      works: [],
+      actors: [],
+      likes: 0,
+      views: 0,
+      commentCount: 0,
+      chapters: [],
+      related: [],
+    };
+    await saveAlbum(album);
+    expect(await getAlbum(album.id)).toMatchObject({
+      id: album.id,
+      name: album.name,
     });
-    const db = await getDatabase();
-    expect(db.version).toBe(3);
-    expect((await listFavorites())[0]).toMatchObject({ albumId: '1', groupId: 'default' });
+    expect((await getAlbum(album.id))?.description.length).toBeLessThanOrEqual(4096);
+  });
+
+  it('refetches an incomplete chapter summary or rebuilds it from cached page metadata', async () => {
+    const chapter: Chapter = {
+      id: '20',
+      albumId: '10',
+      index: 1,
+      title: 'summary',
+      pageCount: 2,
+      images: [],
+      tags: [],
+      scrambleId: 220980,
+      imageOrigin: 'https://cdn-msp.jmapiproxy1.cc',
+    };
+    const key = bucketKey('chapters', chapter.id);
+    const current = await getHostSdk().storage.kv.get(key);
+    await getHostSdk().storage.kv.set(key, { [chapter.id]: chapter }, current.revision);
+    expect(await getChapter(chapter.id)).toBeUndefined();
+
+    for (let page = 0; page < 2; page += 1) {
+      await putImage({
+        key: `image:${chapter.id}:${page}:test`,
+        albumId: chapter.albumId,
+        chapterId: chapter.id,
+        page,
+        sourceUrl: `${chapter.imageOrigin}/media/photos/${chapter.id}/0000${page + 1}.webp`,
+        contentType: 'image/webp',
+        bytes: 1,
+        kind: 'pinned',
+        accessedAt: page + 1,
+        createdAt: page + 1,
+      });
+    }
+    expect((await getChapter(chapter.id))?.images).toEqual([
+      `${chapter.imageOrigin}/media/photos/${chapter.id}/00001.webp`,
+      `${chapter.imageOrigin}/media/photos/${chapter.id}/00002.webp`,
+    ]);
   });
 
   it('restores reading progress', async () => {
@@ -73,6 +112,43 @@ describe('IndexedDB migrations and durable state', () => {
     };
     await saveProgress(progress);
     expect(await getProgress('1')).toEqual(progress);
+  });
+
+  it('retries a sharded bucket write after a global CAS conflict', async () => {
+    resetHostForTests();
+    const base = createMockHostSdk();
+    const set = base.storage.kv.set.bind(base.storage.kv);
+    let calls = 0;
+    const client = {
+      ...base,
+      storage: {
+        ...base.storage,
+        kv: {
+          ...base.storage.kv,
+          set: vi.fn(async (...args: Parameters<typeof set>) => {
+            calls += 1;
+            if (calls === 1) {
+              throw new BjtuPluginError('idempotency_conflict', 'simulated concurrent write');
+            }
+            return set(...args);
+          }),
+        },
+      },
+    } as BjtuPluginSdk;
+    await initializeHost(client);
+    await resetDatabaseForTests();
+    const progress: ReadingProgress = {
+      albumId: 'cas-album',
+      chapterId: 'cas-chapter',
+      page: 3,
+      pageFraction: 0.5,
+      mode: 'horizontal',
+      completed: false,
+      updatedAt: 10,
+    };
+    await saveProgress(progress);
+    expect(calls).toBe(2);
+    expect(await getProgress(progress.albumId)).toEqual(progress);
   });
 
   it('keeps only the 50 most recent searches', async () => {
@@ -109,11 +185,10 @@ describe('IndexedDB migrations and durable state', () => {
       albumId: '1',
       chapterId: '2',
       page: Number(key.slice(-1)),
-      url: `https://cdn-msp.jmapiproxy1.cc/${key}`,
-      blob: new Blob([new Uint8Array(bytes)]),
+      sourceUrl: `https://cdn-msp.jmapiproxy1.cc/${key}`,
+      contentType: 'image/webp',
       bytes,
       kind,
-      corsReadable: true,
       accessedAt,
       createdAt: accessedAt,
     });
@@ -121,10 +196,10 @@ describe('IndexedDB migrations and durable state', () => {
     await putImage(record('pin-2', 'pinned', 100, 2));
     await putImage(record('temp-3', 'temporary', 20, 3));
     expect(await evictTemporaryBytes(15)).toBe(30);
-    const db = await getDatabase();
-    expect(await db.get('images', 'pin-2')).toBeTruthy();
-    expect(await db.get('images', 'temp-1')).toBeUndefined();
-    expect(await db.get('images', 'temp-3')).toBeUndefined();
+    const images = await listImages();
+    expect(images.find((item) => item.key === 'pin-2')).toBeTruthy();
+    expect(images.find((item) => item.key === 'temp-1')).toBeUndefined();
+    expect(images.find((item) => item.key === 'temp-3')).toBeUndefined();
   });
 
   it('uses adaptive quota bounds and the 100 MiB fallback', () => {

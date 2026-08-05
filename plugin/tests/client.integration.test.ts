@@ -1,10 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { installMockBridge } from '../src/lib/mock-bridge';
+import { describe, expect, it } from 'vitest';
 import { JmClient } from '../src/lib/jm-client';
 
-beforeEach(() => installMockBridge());
-
-describe('BjtuService-backed JM client', () => {
+describe('Manifest v3 network-backed JM client', () => {
   it('initializes dynamic version and line health', async () => {
     const client = new JmClient();
     await client.initialize();

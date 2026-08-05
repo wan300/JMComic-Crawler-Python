@@ -11,6 +11,7 @@ import {
 } from './db';
 import { jmClient } from './jm-client';
 import { JmError } from './bridge';
+import { getHostRuntimeState } from './host';
 
 type Listener = (jobs: DownloadJob[]) => void;
 
@@ -77,6 +78,23 @@ export class DownloadManager {
     await this.emit();
   }
 
+  async pauseActive(reason = '应用进入后台，任务已暂停以避免静默消耗流量。'): Promise<number> {
+    const active = (await listDownloadJobs()).filter((job) => (
+      job.status === 'running' || job.status === 'queued'
+    ));
+    for (const job of active) {
+      await putDownloadJob({
+        ...job,
+        status: 'paused',
+        error: reason,
+        updatedAt: Date.now(),
+      });
+    }
+    if (active.some((job) => job.id === this.currentJobId)) this.abortController?.abort();
+    await this.emit();
+    return active.length;
+  }
+
   async resume(id: string): Promise<void> {
     const job = await getDownloadJob(id);
     if (!job || job.status === 'completed') return;
@@ -123,6 +141,8 @@ export class DownloadManager {
 
   private async process(): Promise<void> {
     if (this.processing) return;
+    const network = getHostRuntimeState().network;
+    if (!network.online || !network.validated) return;
     this.processing = true;
     try {
       while (true) {
@@ -194,7 +214,7 @@ export class DownloadManager {
 
   private async loadChapter(chapterId: string): Promise<Chapter> {
     const cached = await getChapter(chapterId);
-    if (cached) return cached;
+    if (cached?.images.length) return cached;
     const chapter = await jmClient.chapter(chapterId);
     await saveChapter(chapter);
     return chapter;

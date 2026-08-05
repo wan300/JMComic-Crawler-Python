@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { BjtuPluginError, type BjtuPluginSdk } from '@bjtu-mis/plugin-sdk';
 import type { BackupPayloadV1 } from '../src/types';
 import {
   backupPreview,
@@ -14,6 +15,8 @@ import {
   setSetting,
 } from '../src/lib/db';
 import { DEFAULT_SETTINGS } from '../src/constants';
+import { createMockHostSdk } from '../src/lib/mock-host';
+import { initializeHost, resetHostForTests } from '../src/lib/host';
 
 function payload(updatedAt = 100): BackupPayloadV1 {
   return {
@@ -71,5 +74,29 @@ describe('JMCR1 backup', () => {
     expect((await getFavorite('1'))?.note).toBe('local');
     expect((await getSettings()).adultAcknowledged).toBe(true);
     expect((await getSettings()).theme).toBe('dark');
+  });
+
+  it('leaves the previous KV document untouched when atomic import fails', async () => {
+    resetHostForTests();
+    const base = createMockHostSdk();
+    const client = {
+      ...base,
+      storage: {
+        ...base.storage,
+        kv: {
+          ...base.storage.kv,
+          import: async () => {
+            throw new BjtuPluginError('migration_failed', 'simulated atomic import failure');
+          },
+        },
+      },
+    } as BjtuPluginSdk;
+    await initializeHost(client);
+    await resetDatabaseForTests();
+    await setFavorite('1', { note: 'before-import' });
+    await expect(importBackup(payload(Date.now() + 10_000), 'replace')).rejects.toThrow(
+      'simulated atomic import failure',
+    );
+    expect(await getFavorite('1')).toMatchObject({ note: 'before-import' });
   });
 });

@@ -73,6 +73,12 @@ import {
   persistReaderProgress,
   VerticalReader,
 } from './reader';
+import {
+  getHostRuntimeState,
+  onHostBack,
+  onHostPause,
+  subscribeHostRuntime,
+} from './lib/host';
 
 type Tab = 'discover' | 'search' | 'library' | 'downloads' | 'settings';
 type Route =
@@ -118,6 +124,10 @@ function parseRoute(): Route {
 
 function navigate(path: string): void {
   location.hash = `#/${path.replace(/^\/+/, '')}`;
+}
+
+function replaceRoute(path: string): void {
+  location.replace(`#/${path.replace(/^\/+/, '')}`);
 }
 
 function useRoute(): Route {
@@ -298,7 +308,12 @@ function SearchView({
           aria-label="搜索漫画"
           enterKeyHint="search"
         />
-        {query && <button type="button" class="clear-button" aria-label="清空搜索" onClick={() => updateSession({ query: '' })}>×</button>}
+        {query && <button
+          type="button"
+          class="clear-button"
+          aria-label="清空搜索"
+          onClick={() => updateSession({ query: '', result: null, scrollY: 0 })}
+        >×</button>}
         <button type="submit" class="search-submit">搜索</button>
       </form>
       <div class="search-kind" role="tablist" aria-label="搜索范围">
@@ -539,12 +554,25 @@ function SettingsView({
   const [backupText, setBackupText] = useState('');
   const [payload, setPayload] = useState<BackupPayloadV1 | null>(null);
   const [preview, setPreview] = useState<BackupPreview | null>(null);
+  const backupTextarea = useRef<HTMLTextAreaElement>(null);
   const refreshStats = () => void storageStats().then(setStats);
   useEffect(refreshStats, []);
+  useEffect(() => {
+    if (!preview) return;
+    return onHostBack(() => {
+      setPayload(null);
+      setPreview(null);
+      return true;
+    });
+  }, [preview]);
 
   const chooseBackup = async () => {
     try {
-      const text = backupText.trim() || await navigator.clipboard.readText();
+      let text = backupText.trim();
+      if (!text && navigator.clipboard?.readText) {
+        text = await navigator.clipboard.readText().catch(() => '');
+      }
+      if (!text) throw new Error('请先在文本框中粘贴 JMCR1 备份。');
       const decoded = await decodeBackup(text);
       setPayload(decoded);
       setPreview(backupPreview(decoded));
@@ -619,13 +647,23 @@ function SettingsView({
         <button class="setting-action" type="button" onClick={async () => {
           try {
             const text = await encodeBackup();
-            await navigator.clipboard.writeText(text);
-            notify('JMCR1 备份已复制到剪贴板');
+            setBackupText(text);
+            setPayload(null);
+            setPreview(null);
+            requestAnimationFrame(() => {
+              backupTextarea.current?.focus();
+              backupTextarea.current?.select();
+            });
+            const copied = navigator.clipboard?.writeText
+              ? await navigator.clipboard.writeText(text).then(() => true).catch(() => false)
+              : false;
+            notify(copied ? 'JMCR1 备份已复制到剪贴板' : '备份已生成并选中，请手动复制');
           } catch (error) {
             notify(error instanceof Error ? error.message : '复制备份失败');
           }
         }}>复制元数据备份</button>
         <textarea
+          ref={backupTextarea}
           value={backupText}
           onInput={(event) => {
             setBackupText(event.currentTarget.value);
@@ -663,9 +701,9 @@ function SettingsView({
 
       <h2 class="settings-heading">关于</h2>
       <div class="settings-group about-card">
-        <strong>JMComic 阅读器 1.0.0</strong>
+        <strong>JMComic 阅读器 2.0.0</strong>
         <p>非官方第三方插件，与 JMComic 及 BJTU MIS 官方均无隶属关系。请遵守当地法律、内容版权与站点规则。</p>
-        <p>插件只调用无需校园权限的 <code>app.http_request</code> 与 <code>app.close_service</code>，不会读取身份、课表、凭据或其他校园数据。</p>
+        <p>插件仅使用 Manifest v3 的运行时、受控网络、KV、Blob 与资源缓存能力，不读取身份、课表、凭据或其他校园数据。</p>
         <p>上游协议或域名变化时需要更新插件，不会绕过宿主的来源白名单。</p>
       </div>
     </section>
@@ -838,10 +876,12 @@ function ReaderView({
 }) {
   const [album, setAlbum] = useState<Album | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
-  const [initialPage, setInitialPage] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
   const [controls, setControls] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const pageRef = useRef(0);
+  const progressQueue = useRef<Promise<void>>(Promise.resolve());
+  const prefetchController = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -854,11 +894,13 @@ function ReaderView({
         getProgress(albumId),
       ]);
       const nextAlbum = cachedAlbum || await jmClient.album(albumId);
-      const nextChapter = cachedChapter || await jmClient.chapter(chapterId);
+      const nextChapter = cachedChapter?.images.length
+        ? cachedChapter
+        : await jmClient.chapter(chapterId);
       await Promise.all([saveAlbum(nextAlbum), saveChapter(nextChapter)]);
       const requestedPage = progress?.chapterId === chapterId ? progress.page : 0;
       const page = normalizeReaderPage(requestedPage, nextChapter.images.length);
-      setInitialPage(page);
+      pageRef.current = page;
       setCurrentPage(page);
       setAlbum(nextAlbum);
       setChapter(nextChapter);
@@ -877,15 +919,66 @@ function ReaderView({
 
   useEffect(() => {
     if (!album || !chapter) return;
+    prefetchController.current?.abort();
     const controller = new AbortController();
+    prefetchController.current = controller;
     void prefetchChapter(album.id, chapter.id, chapter.images, currentPage, 'temporary', controller.signal).catch(() => undefined);
-    return () => controller.abort();
-  }, [album?.id, chapter?.id]);
+    return () => {
+      controller.abort();
+      if (prefetchController.current === controller) prefetchController.current = null;
+    };
+  }, [album?.id, chapter?.id, currentPage]);
+
+  const persistPage = useCallback((page: number) => {
+    if (!album || !chapter) return progressQueue.current;
+    const next = progressQueue.current
+      .catch(() => undefined)
+      .then(() => persistReaderProgress(album, chapter, page, settings.readerMode));
+    progressQueue.current = next;
+    return next;
+  }, [album, chapter, settings.readerMode]);
 
   const setPage = useCallback((page: number) => {
+    pageRef.current = page;
     setCurrentPage(page);
-    if (album && chapter) void persistReaderProgress(album, chapter, page, settings.readerMode);
-  }, [album, chapter, settings.readerMode]);
+    void persistPage(page);
+  }, [persistPage]);
+
+  const leaveReader = useCallback(async () => {
+    prefetchController.current?.abort();
+    await persistPage(pageRef.current);
+    if (!album) return;
+    if (history.length > 1) history.back();
+    else navigate(`album/${album.id}`);
+  }, [album, persistPage]);
+
+  useEffect(() => onHostPause(async () => {
+    prefetchController.current?.abort();
+    await persistPage(pageRef.current);
+  }), [persistPage]);
+
+  useEffect(() => onHostBack(() => {
+    if (controls) {
+      setControls(false);
+      return true;
+    }
+    void leaveReader();
+    return true;
+  }), [controls, leaveReader]);
+
+  useEffect(() => {
+    const flush = () => {
+      prefetchController.current?.abort();
+      void persistPage(pageRef.current);
+    };
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    return () => {
+      flush();
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+    };
+  }, [persistPage]);
 
   if (error) return <main class="reader-shell"><ErrorState error={error} retry={load} /></main>;
   if (!album || !chapter) return <main class="reader-shell"><Spinner label="正在准备章节" /></main>;
@@ -899,7 +992,7 @@ function ReaderView({
       setControls((value) => !value);
     }}>
       <div class={`reader-toolbar top ${controls ? 'visible' : ''}`}>
-        <button class="circle-button" type="button" aria-label="返回漫画详情" onClick={() => navigate(`album/${album.id}`)}>‹</button>
+        <button class="circle-button" type="button" aria-label="返回漫画详情" onClick={() => void leaveReader()}>‹</button>
         <div><strong>{chapter.title}</strong><small>{album.name}</small></div>
         <button class="circle-button" type="button" aria-label="下载当前章" onClick={async () => {
           await downloadManager.enqueueChapter(album, chapter);
@@ -907,9 +1000,9 @@ function ReaderView({
         }}>↓</button>
       </div>
       {settings.readerMode === 'vertical' ? (
-        <VerticalReader album={album} chapter={chapter} settings={settings} initialPage={initialPage} onPageChange={setPage} />
+        <VerticalReader album={album} chapter={chapter} settings={settings} initialPage={currentPage} onPageChange={setPage} />
       ) : (
-        <HorizontalReader album={album} chapter={chapter} settings={settings} initialPage={initialPage} onPageChange={setPage} />
+        <HorizontalReader album={album} chapter={chapter} settings={settings} initialPage={currentPage} onPageChange={setPage} />
       )}
       {controls && (
         <div
@@ -922,7 +1015,11 @@ function ReaderView({
         </div>
       )}
       <div class={`reader-toolbar bottom ${controls ? 'visible' : ''}`}>
-        <button type="button" disabled={!previous} onClick={() => previous && navigate(`read/${album.id}/${previous.id}`)}>上一章</button>
+        <button type="button" disabled={!previous} onClick={async () => {
+          if (!previous) return;
+          await persistPage(pageRef.current);
+          replaceRoute(`read/${album.id}/${previous.id}`);
+        }}>上一章</button>
         <div class="reader-mode-control">
           <button
             type="button"
@@ -937,7 +1034,11 @@ function ReaderView({
             onClick={() => void updateSetting('readerMode', 'horizontal')}
           >横</button>
         </div>
-        <button type="button" disabled={!next} onClick={() => next && navigate(`read/${album.id}/${next.id}`)}>下一章</button>
+        <button type="button" disabled={!next} onClick={async () => {
+          if (!next) return;
+          await persistPage(pageRef.current);
+          replaceRoute(`read/${album.id}/${next.id}`);
+        }}>下一章</button>
       </div>
     </main>
   );
@@ -965,6 +1066,7 @@ function AdultGate({ confirmAdult }: { confirmAdult: () => Promise<void> }) {
 export function App() {
   const route = useRoute();
   const [settings, setSettingsState] = useState<ReaderSettings | null>(null);
+  const [hostState, setHostState] = useState(getHostRuntimeState);
   const [toast, setToast] = useState('');
   const [pendingSearch, setPendingSearch] = useState<{ query: string; kind: SearchKind } | null>(null);
   const [searchSession, setSearchSession] = useState<SearchSession>(EMPTY_SEARCH_SESSION);
@@ -981,6 +1083,20 @@ export function App() {
     void downloadManager.initialize();
     void jmClient.initialize().catch(() => undefined);
   }, []);
+  useEffect(() => subscribeHostRuntime(setHostState), []);
+  useEffect(() => onHostPause(async () => {
+    await downloadManager.pauseActive();
+  }), []);
+  useEffect(() => {
+    if (hostState.network.online && hostState.network.validated) return;
+    void downloadManager.pauseActive('网络不可用，下载任务已暂停。');
+  }, [hostState.network.online, hostState.network.validated]);
+  useEffect(() => onHostBack(() => {
+    if (route.type !== 'album') return false;
+    if (history.length > 1) history.back();
+    else navigate('discover');
+    return true;
+  }), [route]);
 
   const updateSetting = useCallback(async <K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]) => {
     await setSetting(key, value);
@@ -989,13 +1105,20 @@ export function App() {
 
   useEffect(() => {
     if (!settings) return;
-    document.documentElement.dataset.theme = settings.theme;
-    document.documentElement.dataset.reduceMotion = String(settings.reduceMotion);
+    const effectiveTheme = settings.theme === 'system'
+      ? hostState.theme.colorScheme
+      : settings.theme;
+    document.documentElement.dataset.theme = effectiveTheme;
+    document.documentElement.dataset.reduceMotion = String(
+      settings.reduceMotion || hostState.theme.reducedMotion,
+    );
     document.documentElement.dataset.reduceTransparency = String(settings.reduceTransparency);
-    document.documentElement.dataset.highContrast = String(settings.highContrast);
-    const themeColor = settings.theme === 'dark' ? '#09090b' : '#f5f5f7';
+    document.documentElement.dataset.highContrast = String(
+      settings.highContrast || hostState.theme.highContrast,
+    );
+    const themeColor = effectiveTheme === 'dark' ? '#09090b' : '#f5f5f7';
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor);
-  }, [settings]);
+  }, [settings, hostState.theme]);
 
   if (!settings) return <main class="boot-screen"><Spinner label="正在打开本地资料库" /></main>;
   if (!settings.adultAcknowledged) {
@@ -1005,6 +1128,9 @@ export function App() {
   if (route.type === 'reader') {
     return (
       <>
+        {(!hostState.network.online || !hostState.network.validated) && (
+          <div class="network-banner reader-network-banner" role="status">离线模式 · 仅显示已缓存内容</div>
+        )}
         <ReaderView
           albumId={route.albumId}
           chapterId={route.chapterId}
@@ -1025,6 +1151,9 @@ export function App() {
         <span>JMComic</span>
         <button class="host-close" type="button" onClick={() => void closeService()}>关闭</button>
       </div>
+      {(!hostState.network.online || !hostState.network.validated) && (
+        <div class="network-banner" role="status">离线模式 · 下载已暂停</div>
+      )}
       <main class="app-content">
         {route.type === 'album' && (
           <AlbumDetailView

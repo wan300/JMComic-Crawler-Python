@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { zipSync } from 'fflate';
 
@@ -14,6 +14,7 @@ const files = {};
 let expanded = 0;
 for (const relative of paths) {
   const absolute = resolve(root, relative);
+  if (!existsSync(absolute)) continue;
   const stat = statSync(absolute);
   if (!stat.isFile()) continue;
   const bytes = new Uint8Array(readFileSync(absolute));

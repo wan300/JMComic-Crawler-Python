@@ -1,4 +1,5 @@
-import type { HttpBridgePayload } from '../types';
+import { BjtuPluginError, type NetworkResponse } from '@bjtu-mis/plugin-sdk';
+import { closeHost, getHostSdk, readResourceText } from './host';
 
 export type JmErrorCode =
   | 'bridge_unavailable'
@@ -22,67 +23,123 @@ export class JmError extends Error {
   }
 }
 
-function timeoutAfter(ms: number): Promise<never> {
-  return new Promise((_, reject) => {
-    window.setTimeout(() => reject(new JmError('timeout', `请求超过 ${Math.round(ms / 1000)} 秒。`)), ms);
-  });
+export interface HttpResponsePayload {
+  statusCode: number;
+  data: unknown;
+  header: Record<string, unknown>;
+  finalUrl: string;
 }
 
-export async function invokeHost<T = unknown>(
-  method: string,
-  params: Record<string, unknown> = {},
-  timeoutMs = 18_000,
-): Promise<T> {
-  const bridge = window.BjtuService;
-  if (!bridge) {
-    throw new JmError('bridge_unavailable', '请在 BJTU MIS 中打开插件；当前浏览器没有宿主桥接能力。');
+export function mapHostError(error: unknown, fallback = '宿主请求失败，请稍后重试。'): JmError {
+  if (error instanceof JmError) return error;
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return new JmError('cancelled', '请求已取消。', error);
   }
-  let response: Awaited<ReturnType<typeof bridge.invoke>>;
+  if (!(error instanceof BjtuPluginError)) {
+    return new JmError('network', fallback, error);
+  }
+  switch (error.code) {
+    case 'network_timeout':
+    case 'request_timeout':
+      return new JmError('timeout', '请求超过 15 秒，请检查网络后重试。', error);
+    case 'origin_denied':
+      return new JmError(
+        'origin_update_required',
+        '上游使用了插件尚未声明的新域名，请更新插件。',
+        error,
+      );
+    case 'quota_exceeded':
+    case 'resource_too_large':
+      return new JmError('quota', '存储空间不足，请清理临时缓存后重试。', error);
+    case 'user_cancelled':
+      return new JmError('cancelled', '操作已取消。', error);
+    case 'capability_unavailable':
+    case 'permission_denied':
+      return new JmError(
+        'bridge_unavailable',
+        '需要 BJTU MIS 1.4.0 提供的插件运行时能力。',
+        error,
+      );
+    case 'http_error':
+      return new JmError('network', '网络连接失败，请检查网络后重试。', error);
+    default:
+      return new JmError('invalid_response', error.message || fallback, error);
+  }
+}
+
+async function responseBody(response: NetworkResponse, signal?: AbortSignal): Promise<unknown> {
+  if (response.bodyType !== 'resource') return response.body;
+  if (!response.resource) {
+    throw new JmError('invalid_response', '宿主返回了缺少资源句柄的响应。', response);
+  }
   try {
-    response = await Promise.race([bridge.invoke(method, params), timeoutAfter(timeoutMs)]);
-  } catch (cause) {
-    if (cause instanceof JmError) throw cause;
-    throw new JmError('network', '宿主请求失败，请检查网络后重试。', cause);
+    return await readResourceText(response.resource, signal);
+  } finally {
+    await getHostSdk().cache.deleteHandle(response.resource.handle).catch(() => false);
   }
-  if (!response.ok) {
-    throw new JmError(
-      response.error?.code === 'bridge_failed' ? 'network' : 'invalid_response',
-      response.error?.message || '宿主没有完成请求。',
-      response.error,
-    );
-  }
-  return response.data as T;
 }
 
 export async function httpRequest(
   url: string,
   options: {
-    method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     headers?: Record<string, string>;
     data?: unknown;
     timeoutMs?: number;
+    signal?: AbortSignal;
   } = {},
-): Promise<HttpBridgePayload> {
-  const payload = await invokeHost<HttpBridgePayload>(
-    'app.http_request',
-    {
-      url,
-      method: options.method || 'GET',
-      headers: options.headers || {},
-      ...(options.data === undefined ? {} : { data: options.data }),
-    },
-    options.timeoutMs,
-  );
-  if (!payload || typeof payload.statusCode !== 'number') {
-    throw new JmError('invalid_response', '宿主返回了无法识别的 HTTP 响应。', payload);
+): Promise<HttpResponsePayload> {
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  let response: NetworkResponse;
+  try {
+    response = await getHostSdk().network.request(
+      {
+        url,
+        method: options.method ?? 'GET',
+        headers: options.headers ?? {},
+        ...(options.data === undefined
+          ? {}
+          : {
+              body: options.data,
+              bodyType: typeof options.data === 'string' ? 'text' as const : 'json' as const,
+            }),
+        timeoutMs,
+      },
+      {
+        signal: options.signal,
+        timeoutMs,
+      },
+    );
+  } catch (error) {
+    throw mapHostError(error);
   }
-  if (payload.statusCode < 200 || payload.statusCode >= 300) {
-    if (payload.statusCode === 404) throw new JmError('not_found', '没有找到该漫画或章节。');
-    throw new JmError('http', `上游服务返回 HTTP ${payload.statusCode}。`, payload);
+  if (!response || typeof response.status !== 'number') {
+    throw new JmError('invalid_response', '宿主返回了无法识别的 HTTP 响应。', response);
   }
-  return payload;
+  if (response.status < 200 || response.status >= 300) {
+    if (response.status === 404) {
+      throw new JmError('not_found', '没有找到该漫画或章节。', response);
+    }
+    throw new JmError('http', `上游服务返回 HTTP ${response.status}。`, response);
+  }
+  let data: unknown;
+  try {
+    data = await responseBody(response, options.signal);
+  } catch (error) {
+    throw mapHostError(error, '无法读取宿主返回的资源。');
+  }
+  return {
+    statusCode: response.status,
+    data,
+    header: response.headers,
+    finalUrl: response.finalUrl,
+  };
 }
 
 export async function closeService(): Promise<void> {
-  await invokeHost('app.close_service');
+  try {
+    await closeHost();
+  } catch (error) {
+    throw mapHostError(error, '无法关闭插件。');
+  }
 }

@@ -1,0 +1,36 @@
+{
+  "name": "bjtu-jmcomic-reader",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20 <=22"
+  },
+  "scripts": {
+    "dev": "vite --config plugin/vite.config.ts",
+    "test": "vitest run --config plugin/vite.config.ts",
+    "test:watch": "vitest --config plugin/vite.config.ts",
+    "test:e2e": "playwright test --config plugin/playwright.config.ts",
+    "typecheck": "tsc -p plugin/tsconfig.json --noEmit",
+    "build": "npm run typecheck && vite build --config plugin/vite.config.ts",
+    "check:dist": "node plugin/scripts/check-dist.mjs",
+    "check:package": "node plugin/scripts/check-package.mjs"
+  },
+  "dependencies": {
+    "@bjtu-mis/plugin-sdk": "file:plugin/vendor/bjtu-mis-plugin-sdk",
+    "crypto-js": "4.2.0",
+    "fflate": "0.8.2",
+    "preact": "10.27.2"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
+    "@playwright/test": "1.55.0",
+    "@preact/preset-vite": "2.10.2",
+    "@types/crypto-js": "4.2.2",
+    "@types/node": "22.15.30",
+    "jsdom": "26.1.0",
+    "typescript": "5.8.3",
+    "vite": "6.3.5",
+    "vitest": "3.2.4"
+  }
+}

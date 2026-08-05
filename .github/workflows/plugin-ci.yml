@@ -5,13 +5,21 @@ on:
     paths:
       - "plugin/**"
       - "dist/**"
-      - "bjtu-service.json"
+      - "package.json"
+      - "package-lock.json"
+      - "bjtu-plugin.json"
+      - "bjtu-plugin.dev.json"
+      - "bjtu-marketplace.json"
       - ".github/workflows/plugin-ci.yml"
   pull_request:
     paths:
       - "plugin/**"
       - "dist/**"
-      - "bjtu-service.json"
+      - "package.json"
+      - "package-lock.json"
+      - "bjtu-plugin.json"
+      - "bjtu-plugin.dev.json"
+      - "bjtu-marketplace.json"
       - ".github/workflows/plugin-ci.yml"
   workflow_dispatch:
 
@@ -19,11 +27,12 @@ permissions:
   contents: read
 
 env:
-  BJTU_HOST_COMMIT: 6e54b2a8988fc0b199253735ce232b4c36e0df3d
+  BJTU_HOST_COMMIT: 06f2b03a4cda4ad1b9d19fea01e8065808659044
 
 jobs:
   plugin:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Check out plugin
         uses: actions/checkout@v4
@@ -33,27 +42,28 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: plugin/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install locked dependencies
-        working-directory: plugin
         run: npm ci
 
       - name: Unit and integration tests
-        working-directory: plugin
         run: npm test
 
       - name: Build committed static package
-        working-directory: plugin
         run: npm run build
 
       - name: Verify committed dist is reproducible
-        working-directory: plugin
         run: npm run check:dist
 
-      - name: Check package limits
-        working-directory: plugin
+      - name: Check repository package limits
         run: npm run check:package
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser regression without DOM storage
+        run: npm run test:e2e
 
       - name: Check out pinned BJTU MIS host
         uses: actions/checkout@v4
@@ -62,19 +72,36 @@ jobs:
           ref: ${{ env.BJTU_HOST_COMMIT }}
           path: .bjtu-host
 
-      - name: Validate manifest against pinned schema
+      - name: Build official tooling at pinned SHA
+        working-directory: .bjtu-host/plugin-tooling
         run: |
-          npx --yes ajv-cli@5.0.0 validate \
-            --spec=draft2020 \
-            -s .bjtu-host/web/assets/schemas/third-party-service-manifest.schema.json \
-            -d bjtu-service.json
+          npm ci
+          npm run build
 
-      - name: Run pinned official plugin lint
-        run: node .bjtu-host/tools/third-party-service-lint.cjs .
+      - name: Run official contract checks
+        run: |
+          CLI=.bjtu-host/plugin-tooling/packages/plugin-cli/dist/bin.js
+          node "$CLI" lint . --source
+          node "$CLI" lint . --marketplace
+          node "$CLI" test .
+          node "$CLI" inspect .
+          node "$CLI" doctor .
+
+      - name: Verify deterministic official pack
+        run: |
+          CLI=.bjtu-host/plugin-tooling/packages/plugin-cli/dist/bin.js
+          node "$CLI" pack . --out plugin-a.zip
+          node "$CLI" pack . --out plugin-b.zip
+          cmp plugin-a.zip plugin-b.zip
+          if unzip -Z1 plugin-a.zip | grep -Fxq bjtu-plugin.dev.json; then
+            echo "bjtu-plugin.dev.json leaked into release package" >&2
+            exit 1
+          fi
+          sha256sum plugin-a.zip
 
   python:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       JM_OPTION_PATH_TEST: ./assets/option/option_test_api.yml
     steps:

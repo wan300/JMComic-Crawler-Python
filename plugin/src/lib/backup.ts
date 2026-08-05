@@ -1,25 +1,22 @@
 import { gunzipSync, gzipSync, strFromU8, strToU8 } from 'fflate';
-import type { BackupPayloadV1, BackupPreview, ReaderSettings } from '../types';
+import type {
+  Album,
+  BackupPayloadV1,
+  BackupPreview,
+  Chapter,
+  Favorite,
+  FavoriteGroup,
+  HistoryEntry,
+  ReaderSettings,
+  ReadingProgress,
+  SearchHistoryEntry,
+} from '../types';
 import {
-  addSearchHistory,
-  clearMetadataForImport,
-  getAlbum,
-  getDatabase,
-  getFavorite,
-  getProgress,
-  getSettings,
-  listAlbums,
-  listChapters,
-  listFavorites,
-  listGroups,
-  listHistory,
-  listProgress,
-  listSearchHistory,
-  saveAlbum,
-  saveChapter,
-  saveGroup,
-  setFavorite,
-  setSetting,
+  backupPayloadToMetadata,
+  currentPortableMetadata,
+  normalizeSearchHistoryQuery,
+  replaceMetadataAtomically,
+  type PortableMetadata,
 } from './db';
 
 const PREFIX = 'JMCR1';
@@ -45,18 +42,18 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 export async function createBackupPayload(): Promise<BackupPayloadV1> {
-  const settings = await getSettings();
-  const { adultAcknowledged: _excluded, ...portableSettings } = settings;
+  const metadata = await currentPortableMetadata();
+  const { adultAcknowledged: _excluded, ...portableSettings } = metadata.settings;
   return {
     version: 1,
     exportedAt: Date.now(),
-    albums: await listAlbums(),
-    chapters: await listChapters(),
-    favorites: await listFavorites(),
-    groups: await listGroups(),
-    history: await listHistory(),
-    progress: await listProgress(),
-    searchHistory: await listSearchHistory(),
+    albums: metadata.albums,
+    chapters: metadata.chapters,
+    favorites: metadata.favorites,
+    groups: metadata.groups,
+    history: metadata.history,
+    progress: metadata.progress,
+    searchHistory: metadata.searchHistory,
     settings: portableSettings,
   };
 }
@@ -70,12 +67,13 @@ export async function encodeBackup(payload?: BackupPayloadV1): Promise<string> {
 function validatePayload(value: unknown): asserts value is BackupPayloadV1 {
   const payload = value as Partial<BackupPayloadV1>;
   if (
-    !payload ||
-    payload.version !== 1 ||
-    typeof payload.exportedAt !== 'number' ||
-    !Array.isArray(payload.albums) ||
-    !Array.isArray(payload.favorites) ||
-    !payload.settings
+    !payload
+    || payload.version !== 1
+    || typeof payload.exportedAt !== 'number'
+    || !Array.isArray(payload.albums)
+    || !Array.isArray(payload.favorites)
+    || !payload.settings
+    || typeof payload.settings !== 'object'
   ) {
     throw new Error('备份内容不完整或版本不受支持。');
   }
@@ -86,7 +84,9 @@ export async function decodeBackup(text: string): Promise<BackupPayloadV1> {
   if (parts.length !== 3 || parts[0] !== PREFIX) throw new Error('不是有效的 JMCR1 备份。');
   const compressed = base64UrlToBytes(parts[1]);
   const actual = await sha256Hex(compressed);
-  if (actual !== parts[2].toLowerCase()) throw new Error('备份校验失败，内容可能被截断或修改。');
+  if (actual !== parts[2].toLowerCase()) {
+    throw new Error('备份校验失败，内容可能被截断或修改。');
+  }
   let payload: unknown;
   try {
     payload = JSON.parse(strFromU8(gunzipSync(compressed)));
@@ -102,8 +102,80 @@ export function backupPreview(payload: BackupPayloadV1): BackupPreview {
     exportedAt: payload.exportedAt,
     albumCount: payload.albums.length,
     favoriteCount: payload.favorites.length,
-    historyCount: payload.history.length,
-    progressCount: payload.progress.length,
+    historyCount: payload.history?.length || 0,
+    progressCount: payload.progress?.length || 0,
+  };
+}
+
+function mergeNewest<T>(
+  current: T[],
+  incoming: T[],
+  key: (value: T) => string,
+  timestamp: (value: T) => number,
+): T[] {
+  const merged = new Map(current.map((value) => [key(value), value]));
+  for (const value of incoming) {
+    const previous = merged.get(key(value));
+    if (!previous || timestamp(value) >= timestamp(previous)) merged.set(key(value), value);
+  }
+  return [...merged.values()];
+}
+
+function mergeMetadata(
+  current: PortableMetadata,
+  payload: BackupPayloadV1,
+): PortableMetadata {
+  const imported = backupPayloadToMetadata(payload, current.settings.adultAcknowledged);
+  const chapterMap = new Map(current.chapters.map((chapter) => [chapter.id, chapter]));
+  for (const chapter of imported.chapters) chapterMap.set(chapter.id, chapter);
+  const searchHistory = mergeNewest<SearchHistoryEntry>(
+    current.searchHistory,
+    imported.searchHistory,
+    (entry) => normalizeSearchHistoryQuery(entry.query),
+    (entry) => entry.searchedAt,
+  )
+    .sort((a, b) => b.searchedAt - a.searchedAt)
+    .slice(0, 50);
+  return {
+    albums: mergeNewest<Album>(
+      current.albums,
+      imported.albums,
+      (album) => album.id,
+      (album) => album.updatedAt || 0,
+    ),
+    chapters: [...chapterMap.values()] as Chapter[],
+    favorites: mergeNewest<Favorite>(
+      current.favorites,
+      imported.favorites,
+      (favorite) => favorite.albumId,
+      (favorite) => favorite.updatedAt,
+    ),
+    groups: mergeNewest<FavoriteGroup>(
+      current.groups,
+      imported.groups,
+      (group) => group.id,
+      (group) => group.updatedAt,
+    ),
+    history: mergeNewest<HistoryEntry>(
+      current.history,
+      imported.history,
+      (history) => history.albumId,
+      (history) => history.visitedAt,
+    )
+      .sort((a, b) => b.visitedAt - a.visitedAt)
+      .slice(0, 1000),
+    progress: mergeNewest<ReadingProgress>(
+      current.progress,
+      imported.progress,
+      (progress) => progress.albumId,
+      (progress) => progress.updatedAt,
+    ),
+    searchHistory,
+    settings: {
+      ...current.settings,
+      ...imported.settings,
+      adultAcknowledged: current.settings.adultAcknowledged,
+    } as ReaderSettings,
   };
 }
 
@@ -111,50 +183,9 @@ export async function importBackup(
   payload: BackupPayloadV1,
   mode: 'merge' | 'replace' = 'merge',
 ): Promise<void> {
-  const adultAcknowledged = (await getSettings()).adultAcknowledged;
-  if (mode === 'replace') await clearMetadataForImport();
-
-  for (const album of payload.albums) {
-    const existing = await getAlbum(album.id);
-    if (!existing || (album.updatedAt || 0) >= (existing.updatedAt || 0)) await saveAlbum(album);
-  }
-  for (const chapter of payload.chapters || []) await saveChapter(chapter);
-
-  for (const group of payload.groups || []) {
-    const db = await getDatabase();
-    const existing = await db.get('groups', group.id);
-    if (!existing || group.updatedAt >= existing.updatedAt) await saveGroup(group);
-  }
-
-  for (const favorite of payload.favorites) {
-    const existing = await getFavorite(favorite.albumId);
-    if (!existing || favorite.updatedAt >= existing.updatedAt) {
-      const next = await setFavorite(favorite.albumId, {
-        groupId: favorite.groupId,
-        note: favorite.note,
-      });
-      const db = await getDatabase();
-      await db.put('favorites', { ...next, createdAt: favorite.createdAt, updatedAt: favorite.updatedAt });
-    }
-  }
-
-  const db = await getDatabase();
-  for (const history of payload.history || []) {
-    const existing = await db.get('history', history.albumId);
-    if (!existing || history.visitedAt >= existing.visitedAt) await db.put('history', history);
-  }
-  for (const progress of payload.progress || []) {
-    const existing = await getProgress(progress.albumId);
-    if (!existing || progress.updatedAt >= existing.updatedAt) await db.put('progress', progress);
-  }
-  for (const search of payload.searchHistory || []) await addSearchHistory({
-    query: search.query,
-    kind: search.kind,
-    searchedAt: search.searchedAt,
-  });
-
-  for (const [key, value] of Object.entries(payload.settings) as [keyof ReaderSettings, ReaderSettings[keyof ReaderSettings]][]) {
-    if (key !== 'adultAcknowledged') await setSetting(key, value);
-  }
-  await setSetting('adultAcknowledged', adultAcknowledged);
+  const current = await currentPortableMetadata();
+  const target = mode === 'replace'
+    ? backupPayloadToMetadata(payload, current.settings.adultAcknowledged)
+    : mergeMetadata(current, payload);
+  await replaceMetadataAtomically(target);
 }

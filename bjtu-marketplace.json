@@ -1,0 +1,14 @@
+{
+  "description": "非官方的本地优先 JMComic 阅读器，支持匿名搜索、在线阅读、收藏、历史、离线缓存与元数据备份。仅限年满 18 周岁的用户使用。",
+  "author": "wan300",
+  "category": "other",
+  "tags": [
+    "漫画",
+    "阅读",
+    "离线",
+    "收藏",
+    "工具"
+  ],
+  "license": "MIT",
+  "screenshots": []
+}
