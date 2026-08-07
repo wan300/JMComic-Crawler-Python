@@ -1,5 +1,5 @@
 import { type CapabilityId } from './generated/contracts.js';
-import type { BjtuPluginSdk, PluginEventV2, PluginRequestV2, PluginResponseV2 } from './index.js';
+import type { BinaryTransport, BjtuPluginSdk, PluginEventV2, PluginRequestV2, PluginResponseV2 } from './index.js';
 export interface MockHostScenario {
     capabilities?: Partial<Record<CapabilityId, boolean>>;
     permissions?: Partial<Record<string, boolean>>;
@@ -11,21 +11,25 @@ export interface MockHostScenario {
     lifecycle?: 'active' | 'background' | 'destroyed';
     cspViolation?: boolean;
     originViolation?: boolean;
-    binarySupported?: boolean;
+    binaryTransports?: readonly BinaryTransport[];
+    preferredBinaryTransport?: BinaryTransport;
     responseDelayMs?: number;
     responses?: Record<string, unknown>;
 }
 export interface MockRequestRecord {
     request: PluginRequestV2;
     binaryBytes: number;
+    binaryTransport?: BinaryTransport;
     cancelled: boolean;
 }
 export interface MockPluginTransport {
-    readonly binarySupported: boolean;
+    readonly binaryTransports: readonly BinaryTransport[];
+    readonly negotiatedBinaryTransport?: BinaryTransport;
     readonly requests: MockRequestRecord[];
     send(request: PluginRequestV2, binary?: ArrayBuffer): Promise<PluginResponseV2>;
     cancel(requestId: string): void;
     subscribe(listener: (event: PluginEventV2) => boolean | void | Promise<boolean | void>): () => void;
+    configureBinaryTransport(transport: BinaryTransport | undefined): void;
     emit(capability: CapabilityId, event: string, data?: unknown, requestId?: string, requiresAcknowledgement?: boolean): Promise<boolean>;
     setScenario(next: Partial<MockHostScenario>): void;
     currentScenario(): Readonly<MockHostScenario>;

@@ -187,6 +187,12 @@ export async function initializeHost(client?: BjtuPluginSdk): Promise<void> {
     if (missing.length) {
       failCompatibility(`宿主缺少必要能力：${missing.join('、')}。请升级到 BJTU MIS 1.4.0。`);
     }
+    if (
+      !handshake.preferredBinaryTransport ||
+      !handshake.binaryTransports.includes(handshake.preferredBinaryTransport)
+    ) {
+      failCompatibility('宿主未提供可用的二进制传输；请安装包含兼容传输支持的 BJTU MIS 新版。');
+    }
     subscribeLifecycle(sdk);
     notifyState();
     try {

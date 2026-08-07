@@ -7,9 +7,11 @@ export function createMockTransport(initial = {}) {
         network: 'online',
         quota: 'normal',
         lifecycle: 'active',
-        binarySupported: true,
+        binaryTransports: ['arraybuffer', 'base64url-chunks-v1'],
+        preferredBinaryTransport: 'arraybuffer',
         ...initial
     };
+    let negotiatedBinaryTransport;
     const listeners = new Set();
     const requests = [];
     const emitEvent = (capability, event, data, requestId, requiresAcknowledgement = false) => {
@@ -25,14 +27,18 @@ export function createMockTransport(initial = {}) {
         return Promise.all([...listeners].map(async (listener) => (await listener(envelope)) === true)).then((results) => results.some(Boolean));
     };
     return {
-        get binarySupported() {
-            return scenario.binarySupported === true;
+        get binaryTransports() {
+            return Object.freeze([...(scenario.binaryTransports ?? [])]);
+        },
+        get negotiatedBinaryTransport() {
+            return negotiatedBinaryTransport;
         },
         requests,
         async send(request, binary) {
             const record = {
                 request,
                 binaryBytes: binary?.byteLength ?? 0,
+                ...(binary === undefined ? {} : { binaryTransport: negotiatedBinaryTransport }),
                 cancelled: false
             };
             requests.push(record);
@@ -43,9 +49,8 @@ export function createMockTransport(initial = {}) {
             if (!descriptor || scenario.capabilities?.[request.capability] === false) {
                 return failure(request.requestId, 'capability_unavailable', 'Mock capability is disabled.');
             }
-            if (descriptor.support.webViewFeatures.includes('WEB_MESSAGE_ARRAY_BUFFER') &&
-                scenario.binarySupported !== true) {
-                return failure(request.requestId, 'capability_unavailable', 'Mock binary transport is unavailable.');
+            if (binary !== undefined && !negotiatedBinaryTransport) {
+                return failure(request.requestId, 'capability_unavailable', 'Mock binary transport is not negotiated. Call runtime.handshake() first.');
             }
             if (descriptor.permission &&
                 scenario.permissions?.[descriptor.permission.id] === false) {
@@ -92,12 +97,21 @@ export function createMockTransport(initial = {}) {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
+        configureBinaryTransport(transport) {
+            negotiatedBinaryTransport = transport !== undefined &&
+                (scenario.binaryTransports ?? []).includes(transport)
+                ? transport
+                : undefined;
+        },
         emit(capability, event, data, requestId, requiresAcknowledgement) {
             return emitEvent(capability, event, data, requestId, requiresAcknowledgement);
         },
         setScenario(next) {
             const previous = scenario;
             scenario = { ...scenario, ...next };
+            if (next.binaryTransports !== undefined || next.preferredBinaryTransport !== undefined) {
+                negotiatedBinaryTransport = undefined;
+            }
             if (next.theme !== undefined && next.theme !== previous.theme) {
                 void emitEvent('runtime.lifecycle@1', 'theme', {
                     colorScheme: next.theme === 'dark' ? 'dark' : 'light',
@@ -150,15 +164,19 @@ function defaultResponse(request, scenario) {
     if (route === 'runtime.lifecycle@1#handshake') {
         const availableCapabilities = CAPABILITY_REGISTRY.capabilities
             .filter((capability) => scenario.capabilities?.[capability.id] !== false)
-            .filter((capability) => scenario.binarySupported === true ||
-            !capability.support.webViewFeatures.includes('WEB_MESSAGE_ARRAY_BUFFER'))
             .map((capability) => capability.id);
+        const binaryTransports = [...(scenario.binaryTransports ?? [])];
+        const preferredBinaryTransport = scenario.preferredBinaryTransport !== undefined &&
+            binaryTransports.includes(scenario.preferredBinaryTransport)
+            ? scenario.preferredBinaryTransport
+            : binaryTransports[0];
         return {
             protocolVersion: PROTOCOL_VERSION,
             contractProfile: CAPABILITY_REGISTRY.contractProfile,
             runtimeFloor: CAPABILITY_REGISTRY.runtimeFloor,
             availableCapabilities,
-            binaryTransport: scenario.binarySupported === true
+            binaryTransports,
+            ...(preferredBinaryTransport === undefined ? {} : { preferredBinaryTransport })
         };
     }
     if (route === 'runtime.lifecycle@1#ready')

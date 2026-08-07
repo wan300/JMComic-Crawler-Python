@@ -261,7 +261,8 @@ export function createMockHostSdk(): BjtuPluginSdk {
             'storage.blob@1',
             'cache.resource@1',
           ],
-          binaryTransport: true,
+          binaryTransports: ['arraybuffer', 'base64url-chunks-v1'] as const,
+          preferredBinaryTransport: 'arraybuffer' as const,
         };
       },
       async ready() {

@@ -2,7 +2,7 @@
   "schema_version": 3,
   "id": "io.github.wan300.jmcomic",
   "name": "JMComic 阅读器",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "entrypoint": "index.html",
   "icon": "icon.svg",
   "capabilities": {

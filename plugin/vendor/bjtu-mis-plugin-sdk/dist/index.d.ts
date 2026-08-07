@@ -1,6 +1,7 @@
 import { PROTOCOL_VERSION, type CapabilityId, type CapabilityEventData, type CapabilityEventRoute, type CapabilityMethodMap, type CapabilityRequest, type CapabilityResponse, type PluginErrorCode } from './generated/contracts.js';
 export * from './generated/contracts.js';
-export declare const SDK_VERSION = "0.1.0";
+export declare const SDK_VERSION = "0.2.0";
+export type BinaryTransport = 'arraybuffer' | 'base64url-chunks-v1';
 export interface PluginRequestV2 {
     protocolVersion: typeof PROTOCOL_VERSION;
     requestId: string;
@@ -8,8 +9,10 @@ export interface PluginRequestV2 {
     method: string;
     params: unknown;
     binary?: {
+        transport: BinaryTransport;
         size: number;
         chunks: number;
+        sha256: string;
     };
 }
 export interface PluginSuccessV2 {

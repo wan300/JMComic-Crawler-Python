@@ -25,7 +25,8 @@ permissions:
   contents: read
 
 env:
-  BJTU_HOST_COMMIT: 06f2b03a4cda4ad1b9d19fea01e8065808659044
+  BJTU_HOST_REPOSITORY: https://gitee.com/wan300/bjtu_mis_Android.git
+  BJTU_HOST_COMMIT: d7f43c446d4209cb99f6184b754a7c650f6a93d2
 
 jobs:
   plugin:
@@ -64,11 +65,11 @@ jobs:
         run: npm run test:e2e
 
       - name: Check out pinned BJTU MIS host
-        uses: actions/checkout@v4
-        with:
-          repository: wan300/bjtu_mis_Android
-          ref: ${{ env.BJTU_HOST_COMMIT }}
-          path: .bjtu-host
+        run: |
+          git init .bjtu-host
+          git -C .bjtu-host remote add origin "$BJTU_HOST_REPOSITORY"
+          git -C .bjtu-host fetch --depth=1 origin "$BJTU_HOST_COMMIT"
+          git -C .bjtu-host checkout --detach FETCH_HEAD
 
       - name: Build official tooling at pinned SHA
         working-directory: .bjtu-host/plugin-tooling

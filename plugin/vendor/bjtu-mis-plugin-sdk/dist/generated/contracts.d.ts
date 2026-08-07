@@ -22,7 +22,8 @@ export interface CapabilityMethodMap {
             "contractProfile": string;
             "runtimeFloor": number;
             "availableCapabilities": Array<string>;
-            "binaryTransport"?: boolean;
+            "binaryTransports": Array<"arraybuffer" | "base64url-chunks-v1">;
+            "preferredBinaryTransport"?: "arraybuffer" | "base64url-chunks-v1";
         };
     };
     "runtime.lifecycle@1#ready": {
@@ -748,6 +749,7 @@ export declare const CAPABILITY_MOCK_RESPONSES: {
         readonly contractProfile: "example";
         readonly runtimeFloor: 0;
         readonly availableCapabilities: readonly [];
+        readonly binaryTransports: readonly [];
     };
     readonly "runtime.lifecycle@1#ready": {
         readonly ready: false;
@@ -1889,7 +1891,7 @@ export declare const CAPABILITY_REGISTRY: {
             readonly response: {
                 readonly type: "object";
                 readonly additionalProperties: false;
-                readonly required: readonly ["protocolVersion", "contractProfile", "runtimeFloor", "availableCapabilities"];
+                readonly required: readonly ["protocolVersion", "contractProfile", "runtimeFloor", "availableCapabilities", "binaryTransports"];
                 readonly properties: {
                     readonly protocolVersion: {
                         readonly type: "integer";
@@ -1906,8 +1908,17 @@ export declare const CAPABILITY_REGISTRY: {
                             readonly type: "string";
                         };
                     };
-                    readonly binaryTransport: {
-                        readonly type: "boolean";
+                    readonly binaryTransports: {
+                        readonly type: "array";
+                        readonly uniqueItems: true;
+                        readonly items: {
+                            readonly type: "string";
+                            readonly enum: readonly ["arraybuffer", "base64url-chunks-v1"];
+                        };
+                    };
+                    readonly preferredBinaryTransport: {
+                        readonly type: "string";
+                        readonly enum: readonly ["arraybuffer", "base64url-chunks-v1"];
                     };
                 };
             };
@@ -2901,7 +2912,7 @@ export declare const CAPABILITY_REGISTRY: {
         readonly timeoutMs: 60000;
         readonly support: {
             readonly androidMinApi: 26;
-            readonly webViewFeatures: readonly ["WEB_MESSAGE_ARRAY_BUFFER"];
+            readonly webViewFeatures: readonly [];
         };
         readonly methods: readonly [{
             readonly name: "put";
@@ -2976,7 +2987,7 @@ export declare const CAPABILITY_REGISTRY: {
         readonly timeoutMs: 60000;
         readonly support: {
             readonly androidMinApi: 26;
-            readonly webViewFeatures: readonly ["WEB_MESSAGE_ARRAY_BUFFER"];
+            readonly webViewFeatures: readonly [];
         };
         readonly methods: readonly [{
             readonly name: "put";

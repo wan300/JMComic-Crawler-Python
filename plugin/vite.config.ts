@@ -4,7 +4,10 @@ import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
 
 interface DevelopmentConfig {
-  mock?: Record<string, unknown> & { binary_supported?: boolean };
+  mock?: Record<string, unknown> & {
+    binary_transports?: Array<'arraybuffer' | 'base64url-chunks-v1'>;
+    preferred_binary_transport?: 'arraybuffer' | 'base64url-chunks-v1';
+  };
   hmr?: {
     host?: string;
     port?: number;
@@ -20,11 +23,15 @@ const port = Number(process.env.BJTU_VITE_PORT ?? development.hmr?.port ?? 5173)
 const host = development.hmr?.host ?? '127.0.0.1';
 const mockScenario: Record<string, unknown> = {
   ...development.mock,
-  ...(development.mock?.binary_supported === undefined
+  ...(development.mock?.binary_transports === undefined
     ? {}
-    : { binarySupported: development.mock.binary_supported }),
+    : { binaryTransports: development.mock.binary_transports }),
+  ...(development.mock?.preferred_binary_transport === undefined
+    ? {}
+    : { preferredBinaryTransport: development.mock.preferred_binary_transport }),
 };
-delete mockScenario.binary_supported;
+delete mockScenario.binary_transports;
+delete mockScenario.preferred_binary_transport;
 
 export default defineConfig({
   root: import.meta.dirname,

@@ -1,8 +1,8 @@
 # Vendored BJTU MIS Plugin SDK
 
-- Repository: https://github.com/wan300/bjtu_mis_Android
-- Commit: `06f2b03a4cda4ad1b9d19fea01e8065808659044`
-- Package: `@bjtu-mis/plugin-sdk@0.1.0`
+- Repository: https://gitee.com/wan300/bjtu_mis_Android
+- Commit: `d7f43c446d4209cb99f6184b754a7c650f6a93d2`
+- Package: `@bjtu-mis/plugin-sdk@0.2.0`
 - Source path: `plugin-tooling/packages/plugin-sdk`
 
 The files in this directory are the unmodified package metadata, README, license,

@@ -50,6 +50,22 @@ describe('Manifest v3 host contract', () => {
     await expect(initializeHost(client)).rejects.toThrow('cache.resource@1');
   });
 
+  it('fails closed when the host offers no binary transport', async () => {
+    resetHostForTests();
+    const base = createMockHostSdk();
+    const client = proxySdk(base, {
+      runtime: {
+        ...base.runtime,
+        handshake: async () => ({
+          ...(await base.runtime.handshake()),
+          binaryTransports: [],
+          preferredBinaryTransport: undefined,
+        }),
+      },
+    });
+    await expect(initializeHost(client)).rejects.toThrow('二进制传输');
+  });
+
   it('applies theme, viewport and network lifecycle events', async () => {
     await window.__JMCR_V3_TEST__?.emit('theme', {
       colorScheme: 'dark',

@@ -1,8 +1,7 @@
-import { CAPABILITY_IDS, CAPABILITY_REGISTRY, CONTRACT_PROFILE, PROTOCOL_VERSION, RUNTIME_FLOOR } from './generated/contracts.js';
+import { CAPABILITY_IDS, CAPABILITY_REGISTRY, PROTOCOL_VERSION } from './generated/contracts.js';
+import { WebViewBridgeTransport, WebViewTransportError } from './internal/webview-transport.js';
 export * from './generated/contracts.js';
-export const SDK_VERSION = '0.1.0';
-const BINARY_CHUNK_BYTES = 256 * 1024;
-const PRIVATE_BRIDGE_KEY = '__BJTU_PLUGIN_BRIDGE_V2__';
+export const SDK_VERSION = '0.2.0';
 const PRIVATE_MIGRATION_BRIDGE_KEY = '__BJTU_PLUGIN_MIGRATION_V2__';
 export class BjtuPluginError extends Error {
     code;
@@ -14,115 +13,6 @@ export class BjtuPluginError extends Error {
         this.code = code;
         this.retryable = options.retryable ?? false;
         this.details = options.details;
-    }
-}
-class WebViewBridgeTransport {
-    binarySupported;
-    bridge;
-    pending = new Map();
-    eventListeners = new Set();
-    removeBridgeListener;
-    constructor(bridge = getPrivateBridge()) {
-        this.bridge = bridge;
-        this.binarySupported = bridge.binarySupported === true;
-        this.removeBridgeListener = bridge.addEventListener((message) => this.onMessage(message));
-    }
-    send(request, binary) {
-        if (binary && !this.binarySupported) {
-            return Promise.reject(new BjtuPluginError('capability_unavailable', 'The host WebView does not support ArrayBuffer transport.'));
-        }
-        return new Promise((resolve, reject) => {
-            this.pending.set(request.requestId, { resolve, reject });
-            try {
-                if (!binary) {
-                    this.bridge.postMessage(request);
-                    return;
-                }
-                const chunks = Math.ceil(binary.byteLength / BINARY_CHUNK_BYTES);
-                this.bridge.postMessage({
-                    ...request,
-                    binary: {
-                        size: binary.byteLength,
-                        chunks
-                    }
-                });
-                for (let index = 0; index < chunks; index += 1) {
-                    const start = index * BINARY_CHUNK_BYTES;
-                    const payload = binary.slice(start, Math.min(start + BINARY_CHUNK_BYTES, binary.byteLength));
-                    this.bridge.postMessage({
-                        protocolVersion: PROTOCOL_VERSION,
-                        kind: 'binaryChunk',
-                        requestId: request.requestId,
-                        index,
-                        last: index === chunks - 1,
-                        payload
-                    }, [payload]);
-                }
-            }
-            catch (error) {
-                this.pending.delete(request.requestId);
-                reject(error);
-            }
-        });
-    }
-    cancel(requestId) {
-        const pending = this.pending.get(requestId);
-        if (pending) {
-            this.pending.delete(requestId);
-            pending.reject(new BjtuPluginError('user_cancelled', 'The request was cancelled.'));
-        }
-        this.bridge.postMessage({
-            protocolVersion: PROTOCOL_VERSION,
-            kind: 'cancel',
-            requestId
-        });
-    }
-    subscribe(listener) {
-        this.eventListeners.add(listener);
-        return () => this.eventListeners.delete(listener);
-    }
-    close() {
-        this.removeBridgeListener();
-        for (const { reject } of this.pending.values()) {
-            reject(new BjtuPluginError('user_cancelled', 'Plugin transport was closed.'));
-        }
-        this.pending.clear();
-        this.eventListeners.clear();
-    }
-    onMessage(message) {
-        if (!isObject(message) || message.protocolVersion !== PROTOCOL_VERSION)
-            return;
-        if (typeof message.eventId === 'string' && typeof message.event === 'string') {
-            const event = message;
-            void this.dispatchEvent(event);
-            return;
-        }
-        if (typeof message.requestId !== 'string' || typeof message.ok !== 'boolean')
-            return;
-        const pending = this.pending.get(message.requestId);
-        if (!pending)
-            return;
-        this.pending.delete(message.requestId);
-        pending.resolve(message);
-    }
-    async dispatchEvent(event) {
-        const handled = (await Promise.all([...this.eventListeners].map(async (listener) => {
-            try {
-                return (await listener(event)) === true;
-            }
-            catch {
-                return false;
-            }
-        }))).some(Boolean);
-        if (event.requiresAcknowledgement === true && event.requestId) {
-            this.bridge.postMessage({
-                protocolVersion: PROTOCOL_VERSION,
-                kind: 'eventAck',
-                eventId: event.eventId,
-                requestId: event.requestId,
-                handled
-            });
-        }
     }
 }
 export function createBjtuPluginMigrationSdk(bridge = getMigrationBridge()) {
@@ -151,9 +41,13 @@ export function createBjtuPluginMigrationSdk(bridge = getMigrationBridge()) {
     };
 }
 export function createBjtuPluginSdk(transport = new WebViewBridgeTransport()) {
+    let negotiatedBinaryTransport;
     const invoke = async (route, params, options = {}, binary) => {
         const [capability, method] = route.split('#');
         const requestId = createRequestId();
+        if (binary !== undefined && negotiatedBinaryTransport === undefined) {
+            throw new BjtuPluginError('capability_unavailable', 'Binary transport is not negotiated. Call runtime.handshake() before Blob/Cache writes.');
+        }
         if (options.signal?.aborted) {
             throw new BjtuPluginError('user_cancelled', 'The request was cancelled before dispatch.');
         }
@@ -166,7 +60,23 @@ export function createBjtuPluginSdk(transport = new WebViewBridgeTransport()) {
                 }
             })
             : () => undefined;
-        const onAbort = () => transport.cancel(requestId);
+        const cancelTransportRequest = () => {
+            try {
+                transport.cancel(requestId);
+            }
+            catch {
+                // Cancellation is already represented by the SDK promise. A detached
+                // or closing native bridge must not surface as an uncaught exception.
+            }
+        };
+        let rejectCancellation;
+        const cancellation = new Promise((_, reject) => {
+            rejectCancellation = reject;
+        });
+        const onAbort = () => {
+            rejectCancellation?.(new BjtuPluginError('user_cancelled', 'The request was cancelled.'));
+            cancelTransportRequest();
+        };
         options.signal?.addEventListener('abort', onAbort, { once: true });
         const timeoutMs = resolveTimeoutMs(capability, params, options.timeoutMs);
         let timeoutHandle;
@@ -176,7 +86,7 @@ export function createBjtuPluginSdk(transport = new WebViewBridgeTransport()) {
             timeoutHandle = setTimeout(() => {
                 const error = new BjtuPluginError('request_timeout', `The ${capability} request exceeded its ${timeoutMs} ms deadline.`, { retryable: true });
                 reject(error);
-                transport.cancel(requestId);
+                cancelTransportRequest();
             }, timeoutMs);
         });
         try {
@@ -188,7 +98,8 @@ export function createBjtuPluginSdk(transport = new WebViewBridgeTransport()) {
                     method,
                     params
                 }, binary),
-                timeout
+                timeout,
+                cancellation
             ]);
             if (options.signal?.aborted) {
                 throw new BjtuPluginError('user_cancelled', 'The request was cancelled.');
@@ -207,6 +118,9 @@ export function createBjtuPluginSdk(transport = new WebViewBridgeTransport()) {
             }
             if (error instanceof BjtuPluginError)
                 throw error;
+            if (error instanceof WebViewTransportError) {
+                throw new BjtuPluginError(error.code, error.message, { cause: error });
+            }
             throw new BjtuPluginError('capability_unavailable', 'Plugin transport failed.', {
                 cause: error
             });
@@ -226,7 +140,14 @@ export function createBjtuPluginSdk(transport = new WebViewBridgeTransport()) {
     });
     return {
         runtime: {
-            handshake: (options) => invoke('runtime.lifecycle@1#handshake', { sdkVersion: SDK_VERSION }, options),
+            handshake: async (options) => {
+                negotiatedBinaryTransport = undefined;
+                transport.configureBinaryTransport?.(undefined);
+                const result = normalizeHandshake(await invoke('runtime.lifecycle@1#handshake', { sdkVersion: SDK_VERSION }, options));
+                negotiatedBinaryTransport = result.preferredBinaryTransport;
+                transport.configureBinaryTransport?.(negotiatedBinaryTransport);
+                return result;
+            },
             ready: async (options) => {
                 await invoke('runtime.lifecycle@1#ready', {}, options);
             },
@@ -346,13 +267,6 @@ function resolveTimeoutMs(capability, params, override) {
     }
     return timeoutMs;
 }
-function getPrivateBridge() {
-    const bridge = globalThis[PRIVATE_BRIDGE_KEY];
-    if (!bridge || typeof bridge.postMessage !== 'function' || typeof bridge.addEventListener !== 'function') {
-        throw new BjtuPluginError('capability_unavailable', `BJTU plugin host transport is unavailable for ${CONTRACT_PROFILE} runtime ${RUNTIME_FLOOR}.`);
-    }
-    return bridge;
-}
 function getMigrationBridge() {
     const bridge = globalThis[PRIVATE_MIGRATION_BRIDGE_KEY];
     if (!bridge || typeof bridge.invoke !== 'function') {
@@ -368,4 +282,27 @@ function isProgress(value) {
         typeof value.loaded === 'number' &&
         (value.total === undefined || typeof value.total === 'number') &&
         (value.phase === undefined || typeof value.phase === 'string'));
+}
+function normalizeHandshake(value) {
+    const raw = value;
+    const advertised = Array.isArray(raw.binaryTransports)
+        ? raw.binaryTransports.filter(isBinaryTransport)
+        : [];
+    const binaryTransports = [...new Set(advertised)];
+    if (binaryTransports.length === 0 && raw.binaryTransport === true) {
+        binaryTransports.push('arraybuffer');
+    }
+    const preferredBinaryTransport = isBinaryTransport(raw.preferredBinaryTransport) &&
+        binaryTransports.includes(raw.preferredBinaryTransport)
+        ? raw.preferredBinaryTransport
+        : binaryTransports[0];
+    const { binaryTransport: _legacyBinaryTransport, ...rest } = raw;
+    return {
+        ...rest,
+        binaryTransports,
+        ...(preferredBinaryTransport === undefined ? {} : { preferredBinaryTransport })
+    };
+}
+function isBinaryTransport(value) {
+    return value === 'arraybuffer' || value === 'base64url-chunks-v1';
 }
