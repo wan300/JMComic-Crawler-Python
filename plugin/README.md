@@ -1,6 +1,6 @@
 # JMComic 阅读器 · BJTU MIS 插件
 
-这是仓库内的 BJTU MIS Manifest v3 / `contract_v1` 静态插件源码，插件版本为 `2.0.1`。插件只使用匿名 JM API，以及宿主提供的运行时、受控网络、KV、Blob 和资源缓存能力；不读取 BJTU 身份、课表、凭据或其他校园数据。
+这是仓库内的 BJTU MIS Manifest v3 / `contract_v1` 静态插件源码，插件版本为 `2.0.2`。插件只使用匿名 JM API，以及宿主提供的运行时、受控网络、KV、Blob 和资源缓存能力；不读取 BJTU 身份、课表、凭据或其他校园数据。
 
 ## 本地开发
 

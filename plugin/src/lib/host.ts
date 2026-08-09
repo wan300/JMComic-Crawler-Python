@@ -53,6 +53,48 @@ const backHandlers = new Set<BackHandler>();
 const pauseHandlers = new Set<LifecycleHandler>();
 const resumeHandlers = new Set<LifecycleHandler>();
 const cleanupCallbacks: Array<() => void> = [];
+const HANDSHAKE_RETRY_DELAY_MS = 200;
+
+function isTransientHandshakeError(cause: unknown): boolean {
+  if (!(cause instanceof Error)) return false;
+  const code = 'code' in cause ? cause.code : undefined;
+  if (code === 'request_timeout') return true;
+  if (code !== 'capability_unavailable') return false;
+  const message = cause.message.toLowerCase();
+  return message.includes('transport')
+    && (message.includes('unavailable') || message.includes('failed'));
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function connectHost(
+  client?: BjtuPluginSdk,
+): Promise<{
+  client: BjtuPluginSdk;
+  handshake: Awaited<ReturnType<BjtuPluginSdk['runtime']['handshake']>>;
+}> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const nextClient = client ?? sdk ?? createBjtuPluginSdk();
+      sdk = nextClient;
+      return {
+        client: nextClient,
+        handshake: await nextClient.runtime.handshake(),
+      };
+    } catch (cause) {
+      lastError = cause;
+      if (attempt === 0 && isTransientHandshakeError(cause)) {
+        await delay(HANDSHAKE_RETRY_DELAY_MS);
+        continue;
+      }
+      break;
+    }
+  }
+  failCompatibility('无法连接插件运行时，需要 BJTU MIS 1.4.0 或更高版本。', lastError);
+}
 
 function browserInitialState(): HostRuntimeState {
   if (typeof window === 'undefined') return structuredClone(defaultState);
@@ -172,13 +214,9 @@ export async function initializeHost(client?: BjtuPluginSdk): Promise<void> {
   if (initializing) return initializing;
   initializing = (async () => {
     state = browserInitialState();
-    sdk = client ?? sdk ?? createBjtuPluginSdk();
-    let handshake: Awaited<ReturnType<BjtuPluginSdk['runtime']['handshake']>>;
-    try {
-      handshake = await sdk.runtime.handshake({ timeoutMs: 15_000 });
-    } catch (cause) {
-      failCompatibility('无法连接插件运行时，需要 BJTU MIS 1.4.0 或更高版本。', cause);
-    }
+    const connection = await connectHost(client);
+    sdk = connection.client;
+    const { handshake } = connection;
     if (handshake.contractProfile !== 'contract_v1' || handshake.protocolVersion !== 2) {
       failCompatibility('宿主插件契约版本不匹配，需要 BJTU MIS 1.4.0。');
     }
@@ -196,7 +234,7 @@ export async function initializeHost(client?: BjtuPluginSdk): Promise<void> {
     subscribeLifecycle(sdk);
     notifyState();
     try {
-      await sdk.runtime.ready({ timeoutMs: 15_000 });
+      await sdk.runtime.ready();
     } catch (cause) {
       failCompatibility('插件运行时未能完成启动，需要 BJTU MIS 1.4.0。', cause);
     }
@@ -245,7 +283,7 @@ export function onHostResume(handler: LifecycleHandler): () => void {
 }
 
 export async function closeHost(): Promise<void> {
-  await getHostSdk().runtime.close({ timeoutMs: 10_000 });
+  await getHostSdk().runtime.close();
 }
 
 export async function readResourceBytes(resource: ResourceHandle, signal?: AbortSignal): Promise<ArrayBuffer> {

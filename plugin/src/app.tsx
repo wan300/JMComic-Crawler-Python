@@ -701,7 +701,7 @@ function SettingsView({
 
       <h2 class="settings-heading">关于</h2>
       <div class="settings-group about-card">
-        <strong>JMComic 阅读器 2.0.1</strong>
+        <strong>JMComic 阅读器 2.0.2</strong>
         <p>非官方第三方插件，与 JMComic 及 BJTU MIS 官方均无隶属关系。请遵守当地法律、内容版权与站点规则。</p>
         <p>插件仅使用 Manifest v3 的运行时、受控网络、KV、Blob 与资源缓存能力，不读取身份、课表、凭据或其他校园数据。</p>
         <p>上游协议或域名变化时需要更新插件，不会绕过宿主的来源白名单。</p>
