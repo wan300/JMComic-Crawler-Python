@@ -267,15 +267,16 @@ export function createMockHostSdk(): BjtuPluginSdk {
       },
       async ready() {
         queueMicrotask(() => {
+          const density = devicePixelRatio || 1;
           void emit('theme', {
             colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
             reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
             highContrast: matchMedia('(prefers-contrast: more)').matches,
           });
           void emit('resize', {
-            viewportWidthPx: innerWidth,
-            viewportHeightPx: innerHeight,
-            density: devicePixelRatio || 1,
+            viewportWidthPx: Math.round(innerWidth * density),
+            viewportHeightPx: Math.round(innerHeight * density),
+            density,
             fontScale: 1,
             orientation: innerWidth > innerHeight ? 'landscape' : 'portrait',
             safeAreaTopPx: 0,

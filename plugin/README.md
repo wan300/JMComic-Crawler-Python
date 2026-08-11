@@ -37,7 +37,7 @@ bjtu doctor .
 bjtu pack .
 ```
 
-仓库跟踪的 Mock/HMR 配置位于 `plugin/bjtu-plugin.dev.json`。GitHub 高级导入会拒绝根目录中的开发配置，因此根目录不提交该文件。需要显式运行官方 `bjtu dev` 时，先执行 `npm run prepare:bjtu-dev` 生成被 Git 忽略的根配置；官方 `pack` 仍不会把它放入发行包。当前交付仅供 BJTU MIS“高级 / 开发者导入”，不提交插件大厅。
+仓库跟踪的 Mock/HMR 配置位于 `plugin/bjtu-plugin.dev.json`。GitHub 高级导入会拒绝根目录中的开发配置，因此根目录不提交该文件。需要显式运行官方 `bjtu dev` 时，先执行 `npm run prepare:bjtu-dev` 生成被 Git 忽略的根配置；官方 `pack` 仍不会把它放入发行包。当前交付可提交 BJTU MIS 插件大厅，也可通过“高级 / 开发者导入”从 GitHub 仓库安装。
 
 ## 发布前检查
 

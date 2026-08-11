@@ -229,11 +229,11 @@ describe('Manifest v3 host contract', () => {
     });
     expect(getHostRuntimeState()).toMatchObject({
       theme: { colorScheme: 'dark', reducedMotion: true, highContrast: true },
-      viewport: { width: 844, height: 390, imeHeight: 120 },
+      viewport: { width: 844 / 3, height: 130, imeHeight: 40 },
       network: { metered: true, transport: 'cellular' },
     });
-    expect(document.documentElement.style.getPropertyValue('--host-viewport-height')).toBe('390px');
-    expect(document.documentElement.style.getPropertyValue('--safe-bottom')).toBe('16px');
+    expect(document.documentElement.style.getPropertyValue('--host-viewport-height')).toBe('130px');
+    expect(document.documentElement.style.getPropertyValue('--safe-bottom')).toBe('');
   });
 
   it('acknowledges back only when the newest handler consumes it', async () => {

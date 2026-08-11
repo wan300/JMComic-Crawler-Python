@@ -128,6 +128,10 @@ function notifyState(): void {
   for (const listener of stateListeners) listener(state);
 }
 
+function cssPixels(value: number, density: number): number {
+  return Math.max(0, value) / Math.max(1, density);
+}
+
 function applyHostCssVariables(next: HostRuntimeState): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
@@ -135,10 +139,12 @@ function applyHostCssVariables(next: HostRuntimeState): void {
   root.style.setProperty('--host-viewport-width', `${viewport.width}px`);
   root.style.setProperty('--host-viewport-height', `${viewport.height}px`);
   root.style.setProperty('--host-ime-height', `${viewport.imeHeight}px`);
-  root.style.setProperty('--safe-top', `${viewport.safeAreaTop}px`);
-  root.style.setProperty('--safe-right', `${viewport.safeAreaRight}px`);
-  root.style.setProperty('--safe-bottom', `${viewport.safeAreaBottom}px`);
-  root.style.setProperty('--safe-left', `${viewport.safeAreaLeft}px`);
+  // The native host reports screen insets, while this WebView is already laid
+  // out inside the host's content area. Let CSS use its own viewport insets.
+  root.style.removeProperty('--safe-top');
+  root.style.removeProperty('--safe-right');
+  root.style.removeProperty('--safe-bottom');
+  root.style.removeProperty('--safe-left');
   root.style.setProperty('--host-font-scale', String(viewport.fontScale));
   root.dataset.hostColorScheme = next.theme.colorScheme;
   root.dataset.hostReducedMotion = String(next.theme.reducedMotion);
@@ -164,19 +170,20 @@ function subscribeLifecycle(client: BjtuPluginSdk): void {
       notifyState();
     }),
     client.runtime.on('resize', (data) => {
+      const density = Math.max(1, data.density);
       state = {
         ...state,
         viewport: {
-          width: Math.max(1, data.viewportWidthPx),
-          height: Math.max(1, data.viewportHeightPx),
-          density: data.density,
+          width: Math.max(1, cssPixels(data.viewportWidthPx, density)),
+          height: Math.max(1, cssPixels(data.viewportHeightPx, density)),
+          density,
           fontScale: data.fontScale,
           orientation: data.orientation,
-          safeAreaTop: data.safeAreaTopPx,
-          safeAreaRight: data.safeAreaRightPx,
-          safeAreaBottom: data.safeAreaBottomPx,
-          safeAreaLeft: data.safeAreaLeftPx,
-          imeHeight: data.imeHeightPx,
+          safeAreaTop: cssPixels(data.safeAreaTopPx, density),
+          safeAreaRight: cssPixels(data.safeAreaRightPx, density),
+          safeAreaBottom: cssPixels(data.safeAreaBottomPx, density),
+          safeAreaLeft: cssPixels(data.safeAreaLeftPx, density),
+          imeHeight: cssPixels(data.imeHeightPx, density),
         },
       };
       notifyState();
