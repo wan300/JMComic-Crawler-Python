@@ -86,7 +86,49 @@ test('窄横屏门槛页保持单栏并可滚动确认', async ({ page }, testIn
   await expect(confirmButton).toBeInViewport();
 });
 
-test('关键布局与主题快照', async ({ page }, testInfo) => {
+test('关键响应式布局与主题状态', async ({ page }, testInfo) => {
+  await prepare(page);
+
+  const expectedColumns = testInfo.project.name === 'phone' ? 2 : 3;
+  const layout = await page.evaluate(() => {
+    const screen = document.querySelector<HTMLElement>('.screen');
+    const hero = document.querySelector<HTMLElement>('.hero-card');
+    const grid = document.querySelector<HTMLElement>('.album-grid');
+    if (!screen || !hero || !grid) throw new Error('缺少发现页关键布局');
+
+    const screenBounds = screen.getBoundingClientRect();
+    const heroBounds = hero.getBoundingClientRect();
+    return {
+      columns: getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length,
+      horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      screenLeft: screenBounds.left,
+      screenRight: screenBounds.right,
+      heroLeft: heroBounds.left,
+      heroRight: heroBounds.right,
+      heroMinHeight: getComputedStyle(hero).minHeight,
+    };
+  });
+
+  expect(layout.columns).toBe(expectedColumns);
+  expect(layout.horizontalOverflow).toBeLessThanOrEqual(0);
+  expect(layout.screenLeft).toBeGreaterThanOrEqual(0);
+  expect(layout.screenRight).toBeLessThanOrEqual((await page.viewportSize())!.width);
+  expect(layout.heroLeft).toBeGreaterThanOrEqual(layout.screenLeft);
+  expect(layout.heroRight).toBeLessThanOrEqual(layout.screenRight);
+  expect(layout.heroMinHeight).toBe(testInfo.project.name === 'landscape' ? '135px' : '190px');
+
+  if (testInfo.project.name === 'tablet') {
+    await page.getByRole('button', { name: '设置' }).click();
+    await page.getByLabel('主题').selectOption('dark');
+    await page.getByRole('switch', { name: /减少动态效果/ }).check();
+    await page.getByRole('switch', { name: /高对比度/ }).check();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await expect(page.locator('html')).toHaveAttribute('data-reduce-motion', 'true');
+    await expect(page.locator('html')).toHaveAttribute('data-high-contrast', 'true');
+  }
+});
+
+test('关键布局与主题快照 @visual', async ({ page }, testInfo) => {
   await prepare(page);
   await expect(page).toHaveScreenshot('discover.png', { fullPage: true });
 
@@ -198,6 +240,32 @@ test('漫画详情返回保留搜索结果且重复搜索词只显示一次', as
   await expect(input).toHaveValue('示例');
   await expect(page.locator('.search-screen .section-heading h2')).toHaveText('“示例”');
   await expect(page.locator('.album-card')).not.toHaveCount(0);
+});
+
+test('竖读占位图使用宿主视口高度，图片待加载时不误跳页', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone', '宿主视口兼容只需运行一次');
+  await prepare(page);
+  let releaseImages!: () => void;
+  const pendingImages = new Promise<void>((resolve) => { releaseImages = resolve; });
+  await page.route('**/media/photos/**', async (route) => {
+    await pendingImages;
+    await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: mockImage });
+  });
+  try {
+    await page.locator('.album-card-button').first().click();
+    await page.getByRole('button', { name: /开始阅读|续读/ }).click();
+    await expect(page.locator('.vertical-reader')).toBeVisible();
+    await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('resize', {
+      viewportWidthPx: 390, viewportHeightPx: 600, density: 1, fontScale: 1, orientation: 'portrait',
+      safeAreaTopPx: 0, safeAreaRightPx: 0, safeAreaBottomPx: 0, safeAreaLeftPx: 0, imeHeightPx: 0,
+    }));
+    const placeholder = page.locator('[data-reader-page="0"] .image-placeholder');
+    await expect(placeholder).toHaveCSS('min-height', '330px');
+    await expect(page.getByRole('status', { name: '阅读进度：第 1 页，共 5 页' })).toBeVisible();
+  } finally {
+    releaseImages();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
 });
 
 test('连续竖读会恢复到保存的续读页面', async ({ page }, testInfo) => {
@@ -347,8 +415,6 @@ test('宿主 lifecycle 主题与返回键遵循 v3 消费顺序', async ({ page 
   await page.getByRole('button', { name: '下一章' }).click();
   await expect(page).toHaveURL(/#\/read\/438516\/4385162$/);
   await expect(page.locator('.reader-toolbar.top')).toHaveClass(/visible/);
-  expect(await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('back', {}))).toBe(true);
-  await expect(page.locator('.reader-toolbar.top')).not.toHaveClass(/visible/);
   expect(await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('back', {}))).toBe(true);
   await expect(page.locator('.detail-summary h1')).toBeVisible();
   expect(await page.evaluate(() => window.__JMCR_V3_TEST__?.emit('back', {}))).toBe(true);

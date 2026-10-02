@@ -17,6 +17,7 @@ import {
   recoverDownloadJobs,
   resetDatabaseForTests,
   saveProgress,
+  saveChapter,
   setFavorite,
   addSearchHistory,
   evictTemporaryBytes,
@@ -112,6 +113,54 @@ describe('Manifest v3 KV shards and durable state', () => {
     };
     await saveProgress(progress);
     expect(await getProgress('1')).toEqual(progress);
+  });
+
+  it('serves recent album, chapter, and progress snapshots without another host KV read', async () => {
+    const album: Album = {
+      id: 'session-album',
+      name: 'session album',
+      author: ['author'],
+      description: '',
+      coverUrl: '',
+      tags: [],
+      works: [],
+      actors: [],
+      likes: 0,
+      views: 0,
+      commentCount: 0,
+      chapters: [],
+      related: [],
+      updatedAt: Date.now(),
+    };
+    const chapter: Chapter = {
+      id: 'session-chapter',
+      albumId: album.id,
+      index: 1,
+      title: 'session chapter',
+      pageCount: 1,
+      images: ['https://cdn-msp.jmapiproxy1.cc/page.webp'],
+      tags: [],
+      scrambleId: 220980,
+      imageOrigin: 'https://cdn-msp.jmapiproxy1.cc',
+    };
+    const progress: ReadingProgress = {
+      albumId: album.id,
+      chapterId: chapter.id,
+      page: 0,
+      pageFraction: 1,
+      mode: 'vertical',
+      completed: true,
+      updatedAt: Date.now(),
+    };
+    await saveAlbum(album);
+    await saveChapter(chapter);
+    await saveProgress(progress);
+
+    const get = vi.spyOn(getHostSdk().storage.kv, 'get');
+    expect(await getAlbum(album.id)).toEqual(album);
+    expect(await getChapter(chapter.id)).toEqual(chapter);
+    expect(await getProgress(album.id)).toEqual(progress);
+    expect(get).not.toHaveBeenCalled();
   });
 
   it('retries a sharded bucket write after a global CAS conflict', async () => {

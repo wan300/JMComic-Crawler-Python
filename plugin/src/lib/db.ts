@@ -58,6 +58,40 @@ class BucketTooLargeError extends Error {
 const keyQueues = new Map<string, Promise<void>>();
 let importQueue: Promise<void> = Promise.resolve();
 
+const SESSION_CACHE_LIMITS = {
+  albums: 64,
+  chapters: 32,
+  progress: 128,
+} as const;
+const albumSessionCache = new Map<string, Album>();
+const chapterSessionCache = new Map<string, Chapter>();
+const progressSessionCache = new Map<string, ReadingProgress>();
+
+function rememberSessionRecord<T>(
+  cache: Map<string, T>,
+  id: string,
+  value: T,
+  limit: number,
+): void {
+  cache.delete(id);
+  cache.set(id, structuredClone(value));
+  while (cache.size > limit) cache.delete(cache.keys().next().value!);
+}
+
+function readSessionRecord<T>(cache: Map<string, T>, id: string): T | undefined {
+  const value = cache.get(id);
+  if (value === undefined) return undefined;
+  cache.delete(id);
+  cache.set(id, value);
+  return structuredClone(value);
+}
+
+function clearSessionMetadataCache(): void {
+  albumSessionCache.clear();
+  chapterSessionCache.clear();
+  progressSessionCache.clear();
+}
+
 function jsonBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
@@ -236,17 +270,19 @@ async function pruneRemoteSnapshots(): Promise<void> {
 async function saveRemoteSnapshot(
   store: 'albums' | 'chapters',
   value: Album | Chapter,
-): Promise<void> {
+): Promise<Album | Chapter> {
   const compact = store === 'albums'
     ? compactAlbum(value as Album)
     : compactChapter(value as Chapter);
   try {
     await putRecord(store, value.id, value);
+    return value;
   } catch (error) {
     if (!(error instanceof BucketTooLargeError) && !isQuotaError(error)) throw error;
     if (isQuotaError(error)) await pruneRemoteSnapshots();
     try {
       await putRecord(store, value.id, compact);
+      return compact;
     } catch (compactError) {
       if (!(compactError instanceof BucketTooLargeError)) throw compactError;
       await mutateBucket(bucketKey(store, value.id), (bucket) => {
@@ -258,6 +294,7 @@ async function saveRemoteSnapshot(
           delete bucket[disposable.shift()!];
         }
       });
+      return compact;
     }
   }
 }
@@ -272,14 +309,25 @@ export async function resetDatabaseForTests(): Promise<void> {
   }
   keyQueues.clear();
   importQueue = Promise.resolve();
+  clearSessionMetadataCache();
 }
 
 export async function saveAlbum(album: Album): Promise<void> {
-  await saveRemoteSnapshot('albums', album);
+  rememberSessionRecord(albumSessionCache, album.id, album, SESSION_CACHE_LIMITS.albums);
+  const saved = await saveRemoteSnapshot('albums', album) as Album;
+  rememberSessionRecord(albumSessionCache, album.id, saved, SESSION_CACHE_LIMITS.albums);
+}
+
+export function peekAlbum(id: string): Album | undefined {
+  return readSessionRecord(albumSessionCache, id);
 }
 
 export async function getAlbum(id: string): Promise<Album | undefined> {
-  return getRecord<Album>('albums', id);
+  const memory = peekAlbum(id);
+  if (memory) return memory;
+  const album = await getRecord<Album>('albums', id);
+  if (album) rememberSessionRecord(albumSessionCache, id, album, SESSION_CACHE_LIMITS.albums);
+  return album;
 }
 
 export async function listAlbums(): Promise<Album[]> {
@@ -287,12 +335,24 @@ export async function listAlbums(): Promise<Album[]> {
 }
 
 export async function saveChapter(chapter: Chapter): Promise<void> {
-  await saveRemoteSnapshot('chapters', chapter);
+  rememberSessionRecord(chapterSessionCache, chapter.id, chapter, SESSION_CACHE_LIMITS.chapters);
+  const saved = await saveRemoteSnapshot('chapters', chapter) as Chapter;
+  rememberSessionRecord(chapterSessionCache, chapter.id, saved, SESSION_CACHE_LIMITS.chapters);
+}
+
+export function peekChapter(id: string): Chapter | undefined {
+  return readSessionRecord(chapterSessionCache, id);
 }
 
 export async function getChapter(id: string): Promise<Chapter | undefined> {
+  const memory = peekChapter(id);
+  if (memory) return memory;
   const chapter = await getRecord<Chapter>('chapters', id);
-  if (!chapter || chapter.images.length) return chapter;
+  if (!chapter) return undefined;
+  if (chapter.images.length) {
+    rememberSessionRecord(chapterSessionCache, id, chapter, SESSION_CACHE_LIMITS.chapters);
+    return chapter;
+  }
 
   const byPage = new Map<number, CachedImage>();
   for (const image of (await listRecords<CachedImage>('images')).filter((item) => item.chapterId === id)) {
@@ -307,7 +367,9 @@ export async function getChapter(id: string): Promise<Chapter | undefined> {
     if (!image?.sourceUrl) return undefined;
     images.push(image.sourceUrl);
   }
-  return { ...chapter, images };
+  const rebuilt = { ...chapter, images };
+  rememberSessionRecord(chapterSessionCache, id, rebuilt, SESSION_CACHE_LIMITS.chapters);
+  return rebuilt;
 }
 
 export async function listChapters(): Promise<Chapter[]> {
@@ -336,6 +398,15 @@ export async function setSetting<K extends keyof ReaderSettings>(
 }
 
 export async function saveProgress(progress: ReadingProgress): Promise<void> {
+  const memory = readSessionRecord(progressSessionCache, progress.albumId);
+  if (!memory || memory.updatedAt <= progress.updatedAt) {
+    rememberSessionRecord(
+      progressSessionCache,
+      progress.albumId,
+      progress,
+      SESSION_CACHE_LIMITS.progress,
+    );
+  }
   await mutateBucket(bucketKey('progress', progress.albumId), (bucket) => {
     const existing = bucket[progress.albumId] as ReadingProgress | undefined;
     if (!existing || existing.updatedAt <= progress.updatedAt) {
@@ -344,8 +415,23 @@ export async function saveProgress(progress: ReadingProgress): Promise<void> {
   });
 }
 
+export function peekProgress(albumId: string): ReadingProgress | undefined {
+  return readSessionRecord(progressSessionCache, albumId);
+}
+
 export async function getProgress(albumId: string): Promise<ReadingProgress | undefined> {
-  return getRecord<ReadingProgress>('progress', albumId);
+  const memory = peekProgress(albumId);
+  if (memory) return memory;
+  const progress = await getRecord<ReadingProgress>('progress', albumId);
+  if (progress) {
+    rememberSessionRecord(
+      progressSessionCache,
+      albumId,
+      progress,
+      SESSION_CACHE_LIMITS.progress,
+    );
+  }
+  return progress;
 }
 
 export async function listProgress(): Promise<ReadingProgress[]> {
@@ -520,12 +606,7 @@ export async function putImage(image: CachedImage): Promise<void> {
 }
 
 export async function getImage(key: string): Promise<CachedImage | undefined> {
-  const image = await getRecord<CachedImage>('images', key);
-  if (image) {
-    image.accessedAt = Date.now();
-    await putRecord('images', key, image);
-  }
-  return image;
+  return getRecord<CachedImage>('images', key);
 }
 
 export async function deleteImageMetadata(key: string): Promise<void> {
@@ -555,9 +636,10 @@ export async function cacheByteTotals(): Promise<{ temporaryBytes: number; pinne
   );
 }
 
-async function removeCachedImages(images: CachedImage[]): Promise<number> {
+async function removeCachedImages(images: CachedImage[], signal?: AbortSignal): Promise<number> {
   let removed = 0;
   for (const image of images) {
+    signal?.throwIfAborted();
     await getHostSdk().cache.delete(image.key).catch(() => ({ removed: false }));
     await deleteImageMetadata(image.key);
     removed += image.bytes;
@@ -565,10 +647,12 @@ async function removeCachedImages(images: CachedImage[]): Promise<number> {
   return removed;
 }
 
-export async function evictTemporaryBytes(bytesNeeded: number): Promise<number> {
+export async function evictTemporaryBytes(bytesNeeded: number, signal?: AbortSignal): Promise<number> {
+  signal?.throwIfAborted();
   const candidates = (await listImages())
     .filter((image) => image.kind === 'temporary')
     .sort((a, b) => a.accessedAt - b.accessedAt);
+  signal?.throwIfAborted();
   const selected: CachedImage[] = [];
   let freed = 0;
   for (const image of candidates) {
@@ -576,7 +660,7 @@ export async function evictTemporaryBytes(bytesNeeded: number): Promise<number> 
     selected.push(image);
     freed += image.bytes;
   }
-  await removeCachedImages(selected);
+  await removeCachedImages(selected, signal);
   return freed;
 }
 
@@ -614,6 +698,7 @@ export async function reconcileImageMetadata(): Promise<number> {
 }
 
 export async function clearMetadataForImport(): Promise<void> {
+  clearSessionMetadataCache();
   const metadataPrefixes = [
     `${DATA_PREFIX}albums/`,
     `${DATA_PREFIX}chapters/`,
@@ -749,6 +834,7 @@ export async function replaceMetadataAtomically(metadata: PortableMetadata): Pro
       revision: current.revision,
       values: metadataToKvValues(metadata, current.values),
     });
+    clearSessionMetadataCache();
   });
   importQueue = operation.catch(() => undefined);
   await operation;

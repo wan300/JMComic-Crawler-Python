@@ -2,6 +2,8 @@ name: BJTU Plugin CI
 
 on:
   push:
+    branches:
+      - master
     paths:
       - "plugin/**"
       - "dist/**"

@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 process.env.NO_PROXY = [process.env.NO_PROXY, '127.0.0.1', 'localhost'].filter(Boolean).join(',');
 process.env.no_proxy = process.env.NO_PROXY;
+const reuseExternalServer = process.env.PLAYWRIGHT_EXTERNAL_SERVER === '1';
 
 export default defineConfig({
   testDir: './e2e',
@@ -59,7 +60,7 @@ export default defineConfig({
       },
     },
   ],
-  webServer: {
+  webServer: reuseExternalServer ? undefined : {
     command: 'npm run dev -- --host 127.0.0.1 --port 47651 --strictPort',
     cwd: '..',
     url: 'http://127.0.0.1:47651/?mock=1',

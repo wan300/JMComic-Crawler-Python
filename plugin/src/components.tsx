@@ -175,6 +175,10 @@ export function ComicImage({
     void loadImage({ albumId, chapterId, page, url, signal: controller.signal })
       .then(async (result) => {
         revoke = result.revoke;
+        if (controller.signal.aborted) {
+          revoke?.();
+          return;
+        }
         const dimensions = await naturalSize(result.src);
         if (!controller.signal.aborted) {
           setSrc(result.src);

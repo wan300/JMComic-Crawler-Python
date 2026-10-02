@@ -51,6 +51,9 @@ import {
   listHistory,
   listProgress,
   listSearchHistory,
+  peekAlbum,
+  peekChapter,
+  peekProgress,
   saveAlbum,
   saveChapter,
   saveGroup,
@@ -94,6 +97,26 @@ interface SearchSession {
   result: SearchPage | null;
   scrollY: number;
 }
+
+interface DiscoverSession {
+  order: string;
+  time: string;
+  category: string;
+  result: SearchPage | null;
+  scrollY: number;
+  loadedAt: number;
+}
+
+const SESSION_REVALIDATE_MS = 5 * 60 * 1000;
+
+const EMPTY_DISCOVER_SESSION: DiscoverSession = {
+  order: 'mr',
+  time: 'a',
+  category: '0',
+  result: null,
+  scrollY: 0,
+  loadedAt: 0,
+};
 
 const EMPTY_SEARCH_SESSION: SearchSession = {
   query: '',
@@ -167,21 +190,44 @@ function ScreenHeader({
 function DiscoverView({
   settings,
   openAlbum,
+  session,
+  updateSession,
 }: {
   settings: ReaderSettings;
   openAlbum: (album: AlbumSummary) => void;
+  session: DiscoverSession;
+  updateSession: (patch: Partial<DiscoverSession>) => void;
 }) {
-  const [page, setPage] = useState<SearchPage | null>(null);
+  const { order, time, category, result } = session;
   const [error, setError] = useState<unknown>(null);
-  const [order, setOrder] = useState('mr');
-  const [time, setTime] = useState('a');
-  const [category, setCategory] = useState('0');
+  const requestSequence = useRef(0);
   const load = useCallback(() => {
+    const sequence = ++requestSequence.current;
     setError(null);
-    setPage(null);
-    void jmClient.categories({ order, time, category }).then(setPage).catch(setError);
-  }, [order, time, category]);
-  useEffect(load, [load]);
+    void jmClient.categories({ order, time, category })
+      .then((page) => {
+        if (sequence === requestSequence.current) {
+          updateSession({ result: page, loadedAt: Date.now() });
+        }
+      })
+      .catch((cause) => {
+        if (sequence === requestSequence.current) setError(cause);
+      });
+  }, [order, time, category, updateSession]);
+  useEffect(() => {
+    if (result && Date.now() - session.loadedAt < SESSION_REVALIDATE_MS) return;
+    load();
+  }, [load, result, session.loadedAt]);
+  useEffect(() => () => {
+    requestSequence.current += 1;
+  }, []);
+  useLayoutEffect(() => {
+    if (!result || session.scrollY <= 0) return;
+    const frame = requestAnimationFrame(() => {
+      window.scrollTo({ top: session.scrollY, left: 0, behavior: 'auto' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [result, session.scrollY]);
 
   return (
     <section class="screen">
@@ -206,20 +252,23 @@ function DiscoverView({
           <button
             type="button"
             class={`chip${category === item.value ? ' selected' : ''}`}
-            onClick={() => setCategory(item.value)}
+            onClick={() => updateSession({ category: item.value, result: null, scrollY: 0, loadedAt: 0 })}
           >{item.label}</button>
         ))}
       </div>
       <div class="filter-bar">
-        <select aria-label="排序" value={order} onChange={(event) => setOrder(event.currentTarget.value)}>
+        <select aria-label="排序" value={order} onChange={(event) => updateSession({ order: event.currentTarget.value, result: null, scrollY: 0, loadedAt: 0 })}>
           {ORDER_OPTIONS.map((item) => <option value={item.value}>{item.label}</option>)}
         </select>
-        <select aria-label="时间范围" value={time} onChange={(event) => setTime(event.currentTarget.value)}>
+        <select aria-label="时间范围" value={time} onChange={(event) => updateSession({ time: event.currentTarget.value, result: null, scrollY: 0, loadedAt: 0 })}>
           {TIME_OPTIONS.map((item) => <option value={item.value}>{item.label}</option>)}
         </select>
       </div>
-      {error ? <ErrorState error={error} retry={load} /> : !page ? <Spinner label="正在连接可用线路" /> :
-        page.items.length ? <AlbumGrid albums={page.items} settings={settings} onOpen={openAlbum} /> :
+      {error && !result ? <ErrorState error={error} retry={load} /> : !result ? <Spinner label="正在连接可用线路" /> :
+        result.items.length ? <AlbumGrid albums={result.items} settings={settings} onOpen={(album) => {
+          updateSession({ scrollY: window.scrollY });
+          openAlbum(album);
+        }} /> :
           <EmptyState title="这里暂时是空的" description="切换分类或时间范围再看看。" />}
     </section>
   );
@@ -701,7 +750,7 @@ function SettingsView({
 
       <h2 class="settings-heading">关于</h2>
       <div class="settings-group about-card">
-        <strong>JMComic 阅读器 2.0.2</strong>
+        <strong>JMComic 阅读器 2.0.3</strong>
         <p>非官方第三方插件，与 JMComic 及 BJTU MIS 官方均无隶属关系。请遵守当地法律、内容版权与站点规则。</p>
         <p>插件仅使用 Manifest v3 的运行时、受控网络、KV、Blob 与资源缓存能力，不读取身份、课表、凭据或其他校园数据。</p>
         <p>上游协议或域名变化时需要更新插件，不会绕过宿主的来源白名单。</p>
@@ -725,32 +774,38 @@ function AlbumDetailView({
   searchFacet: (query: string, kind: SearchKind) => void;
   notify: (message: string) => void;
 }) {
-  const [album, setAlbum] = useState<Album | null>(null);
+  const [album, setAlbum] = useState<Album | null>(() => peekAlbum(albumId) || null);
   const [favorite, setFavoriteState] = useState<Favorite | null>(null);
   const [groups, setGroups] = useState<FavoriteGroup[]>([]);
-  const [progress, setProgress] = useState<ReadingProgress | null>(null);
+  const [progress, setProgress] = useState<ReadingProgress | null>(() => peekProgress(albumId) || null);
   const [error, setError] = useState<unknown>(null);
   const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
     const sequence = ++loadSequence.current;
+    const memoryAlbum = peekAlbum(albumId);
+    const memoryProgress = peekProgress(albumId);
     setError(null);
-    setAlbum(null);
+    setAlbum(memoryAlbum || null);
     setFavoriteState(null);
     setGroups([]);
-    setProgress(null);
-    const [cached, savedFavorite, savedGroups, savedProgress] = await Promise.all([
-      getAlbum(albumId),
-      getFavorite(albumId),
-      listGroups(),
-      getProgress(albumId),
-    ]);
-    if (sequence !== loadSequence.current) return;
-    if (cached) setAlbum(cached);
-    setFavoriteState(savedFavorite || null);
-    setGroups(savedGroups);
-    setProgress(savedProgress || null);
+    setProgress(memoryProgress || null);
+    // Auxiliary storage must never hold up the cached album or navigation.
+    void getFavorite(albumId).then((value) => {
+      if (sequence === loadSequence.current) setFavoriteState(value || null);
+    }).catch(() => undefined);
+    void listGroups().then((value) => {
+      if (sequence === loadSequence.current) setGroups(value);
+    }).catch(() => undefined);
+    void getProgress(albumId).then((value) => {
+      if (sequence === loadSequence.current) setProgress(peekProgress(albumId) || value || null);
+    }).catch(() => undefined);
+    let cached = memoryAlbum;
     try {
+      cached = await getAlbum(albumId);
+      if (sequence !== loadSequence.current) return;
+      if (cached) setAlbum(cached);
+      if (cached?.updatedAt && Date.now() - cached.updatedAt < SESSION_REVALIDATE_MS) return;
       const fresh = await jmClient.album(albumId);
       if (sequence !== loadSequence.current) return;
       setAlbum(fresh);
@@ -771,7 +826,7 @@ function AlbumDetailView({
   }, [load]);
 
   if (error && !album) return <section class="screen"><ScreenHeader title={`JM${albumId}`} back={back} /><ErrorState error={error} retry={load} /></section>;
-  if (!album) return <section class="screen"><Spinner label="正在载入漫画资料" /></section>;
+  if (!album) return <section class="screen"><ScreenHeader title={`JM${albumId}`} back={back} /><Spinner label="正在载入漫画资料" /></section>;
   const resumeChapter = progress?.chapterId || album.chapters[0]?.id;
   return (
     <section class="screen detail-screen">
@@ -874,48 +929,65 @@ function ReaderView({
   updateSetting: <K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]) => Promise<void>;
   notify: (message: string) => void;
 }) {
-  const [album, setAlbum] = useState<Album | null>(null);
-  const [chapter, setChapter] = useState<Chapter | null>(null);
-  const [currentPage, setCurrentPage] = useState(0);
+  const [album, setAlbum] = useState<Album | null>(() => peekAlbum(albumId) || null);
+  const [chapter, setChapter] = useState<Chapter | null>(() => peekChapter(chapterId) || null);
+  const [currentPage, setCurrentPage] = useState(() => {
+    const cachedChapter = peekChapter(chapterId);
+    const cachedProgress = peekProgress(albumId);
+    const savedPage = cachedProgress?.chapterId === chapterId ? cachedProgress.page : 0;
+    return normalizeReaderPage(savedPage, cachedChapter?.images.length || 0);
+  });
   const [controls, setControls] = useState(true);
   const [error, setError] = useState<unknown>(null);
-  const pageRef = useRef(0);
-  const progressQueue = useRef<Promise<void>>(Promise.resolve());
+  const pageRef = useRef(currentPage);
+  const loadSequence = useRef(0);
   const prefetchController = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     setError(null);
-    setAlbum(null);
-    setChapter(null);
+    setAlbum(peekAlbum(albumId) || null);
+    setChapter(peekChapter(chapterId) || null);
     try {
       const [cachedAlbum, cachedChapter, progress] = await Promise.all([
         getAlbum(albumId),
         getChapter(chapterId),
         getProgress(albumId),
       ]);
+      if (sequence !== loadSequence.current) return;
       const nextAlbum = cachedAlbum || await jmClient.album(albumId);
+      if (sequence !== loadSequence.current) return;
       const nextChapter = cachedChapter?.images.length
         ? cachedChapter
         : await jmClient.chapter(chapterId);
-      await Promise.all([saveAlbum(nextAlbum), saveChapter(nextChapter)]);
+      if (sequence !== loadSequence.current) return;
       const requestedPage = progress?.chapterId === chapterId ? progress.page : 0;
       const page = normalizeReaderPage(requestedPage, nextChapter.images.length);
       pageRef.current = page;
       setCurrentPage(page);
       setAlbum(nextAlbum);
       setChapter(nextChapter);
-      await addHistory({
+      void Promise.all([
+        cachedAlbum ? Promise.resolve() : saveAlbum(nextAlbum),
+        cachedChapter?.images.length ? Promise.resolve() : saveChapter(nextChapter),
+      ]).catch(() => undefined);
+      void addHistory({
         albumId,
         chapterId,
         title: nextAlbum.name,
         coverUrl: nextAlbum.coverUrl,
         visitedAt: Date.now(),
-      });
+      }).catch(() => undefined);
     } catch (cause) {
-      setError(cause);
+      if (sequence === loadSequence.current) setError(cause);
     }
   }, [albumId, chapterId]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => {
+      loadSequence.current += 1;
+    };
+  }, [load]);
 
   useEffect(() => {
     if (!album || !chapter) return;
@@ -930,12 +1002,8 @@ function ReaderView({
   }, [album?.id, chapter?.id, currentPage]);
 
   const persistPage = useCallback((page: number) => {
-    if (!album || !chapter) return progressQueue.current;
-    const next = progressQueue.current
-      .catch(() => undefined)
-      .then(() => persistReaderProgress(album, chapter, page, settings.readerMode));
-    progressQueue.current = next;
-    return next;
+    if (!album || !chapter) return Promise.resolve();
+    return persistReaderProgress(album, chapter, page, settings.readerMode).catch(() => undefined);
   }, [album, chapter, settings.readerMode]);
 
   const setPage = useCallback((page: number) => {
@@ -944,13 +1012,12 @@ function ReaderView({
     void persistPage(page);
   }, [persistPage]);
 
-  const leaveReader = useCallback(async () => {
+  const leaveReader = useCallback(() => {
     prefetchController.current?.abort();
-    await persistPage(pageRef.current);
-    if (!album) return;
+    void persistPage(pageRef.current);
     if (history.length > 1) history.back();
-    else navigate(`album/${album.id}`);
-  }, [album, persistPage]);
+    else navigate(`album/${albumId}`);
+  }, [albumId, persistPage]);
 
   useEffect(() => onHostPause(async () => {
     prefetchController.current?.abort();
@@ -958,13 +1025,9 @@ function ReaderView({
   }), [persistPage]);
 
   useEffect(() => onHostBack(() => {
-    if (controls) {
-      setControls(false);
-      return true;
-    }
-    void leaveReader();
+    leaveReader();
     return true;
-  }), [controls, leaveReader]);
+  }), [leaveReader]);
 
   useEffect(() => {
     const flush = () => {
@@ -980,8 +1043,14 @@ function ReaderView({
     };
   }, [persistPage]);
 
-  if (error) return <main class="reader-shell"><ErrorState error={error} retry={load} /></main>;
-  if (!album || !chapter) return <main class="reader-shell"><Spinner label="正在准备章节" /></main>;
+  if (error || !album || !chapter) return (
+    <main class="reader-shell controls-visible">
+      <div class="reader-toolbar top visible">
+        <button class="circle-button" type="button" aria-label="返回漫画详情" onClick={leaveReader}>‹</button>
+      </div>
+      {error ? <ErrorState error={error} retry={load} /> : <Spinner label="正在准备章节" />}
+    </main>
+  );
   const chapterIndex = album.chapters.findIndex((item) => item.id === chapter.id);
   const previous = album.chapters[chapterIndex - 1];
   const next = album.chapters[chapterIndex + 1];
@@ -992,7 +1061,7 @@ function ReaderView({
       setControls((value) => !value);
     }}>
       <div class={`reader-toolbar top ${controls ? 'visible' : ''}`}>
-        <button class="circle-button" type="button" aria-label="返回漫画详情" onClick={() => void leaveReader()}>‹</button>
+        <button class="circle-button" type="button" aria-label="返回漫画详情" onClick={leaveReader}>‹</button>
         <div><strong>{chapter.title}</strong><small>{album.name}</small></div>
         <button class="circle-button" type="button" aria-label="下载当前章" onClick={async () => {
           await downloadManager.enqueueChapter(album, chapter);
@@ -1015,9 +1084,9 @@ function ReaderView({
         </div>
       )}
       <div class={`reader-toolbar bottom ${controls ? 'visible' : ''}`}>
-        <button type="button" disabled={!previous} onClick={async () => {
+        <button type="button" disabled={!previous} onClick={() => {
           if (!previous) return;
-          await persistPage(pageRef.current);
+          void persistPage(pageRef.current);
           replaceRoute(`read/${album.id}/${previous.id}`);
         }}>上一章</button>
         <div class="reader-mode-control">
@@ -1034,9 +1103,9 @@ function ReaderView({
             onClick={() => void updateSetting('readerMode', 'horizontal')}
           >横</button>
         </div>
-        <button type="button" disabled={!next} onClick={async () => {
+        <button type="button" disabled={!next} onClick={() => {
           if (!next) return;
-          await persistPage(pageRef.current);
+          void persistPage(pageRef.current);
           replaceRoute(`read/${album.id}/${next.id}`);
         }}>下一章</button>
       </div>
@@ -1066,9 +1135,12 @@ function AdultGate({ confirmAdult }: { confirmAdult: () => Promise<void> }) {
 export function App() {
   const route = useRoute();
   const [settings, setSettingsState] = useState<ReaderSettings | null>(null);
+  const savedSettings = useRef<ReaderSettings | null>(null);
+  const settingSequence = useRef<Partial<Record<keyof ReaderSettings, number>>>({});
   const [hostState, setHostState] = useState(getHostRuntimeState);
   const [toast, setToast] = useState('');
   const [pendingSearch, setPendingSearch] = useState<{ query: string; kind: SearchKind } | null>(null);
+  const [discoverSession, setDiscoverSession] = useState<DiscoverSession>(EMPTY_DISCOVER_SESSION);
   const [searchSession, setSearchSession] = useState<SearchSession>(EMPTY_SEARCH_SESSION);
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -1077,9 +1149,15 @@ export function App() {
   const updateSearchSession = useCallback((patch: Partial<SearchSession>) => {
     setSearchSession((current) => ({ ...current, ...patch }));
   }, []);
+  const updateDiscoverSession = useCallback((patch: Partial<DiscoverSession>) => {
+    setDiscoverSession((current) => ({ ...current, ...patch }));
+  }, []);
 
   useEffect(() => {
-    void getSettings().then(setSettingsState);
+    void getSettings().then((value) => {
+      savedSettings.current = value;
+      setSettingsState(value);
+    });
     void downloadManager.initialize();
     void jmClient.initialize().catch(() => undefined);
   }, []);
@@ -1099,9 +1177,19 @@ export function App() {
   }), [route]);
 
   const updateSetting = useCallback(async <K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]) => {
-    await setSetting(key, value);
+    const sequence = (settingSequence.current[key] || 0) + 1;
+    settingSequence.current[key] = sequence;
     setSettingsState((current) => current ? { ...current, [key]: value } : current);
-  }, []);
+    try {
+      await setSetting(key, value);
+      if (savedSettings.current) savedSettings.current = { ...savedSettings.current, [key]: value };
+    } catch {
+      if (settingSequence.current[key] !== sequence) return;
+      const saved = savedSettings.current;
+      if (saved) setSettingsState((current) => current ? { ...current, [key]: saved[key] } : current);
+      notify('设置保存失败，请重试');
+    }
+  }, [notify]);
 
   useEffect(() => {
     if (!settings) return;
@@ -1132,6 +1220,7 @@ export function App() {
           <div class="network-banner reader-network-banner" role="status">离线模式 · 仅显示已缓存内容</div>
         )}
         <ReaderView
+          key={`${route.albumId}/${route.chapterId}`}
           albumId={route.albumId}
           chapterId={route.chapterId}
           settings={settings}
@@ -1157,6 +1246,7 @@ export function App() {
       <main class="app-content">
         {route.type === 'album' && (
           <AlbumDetailView
+            key={route.albumId}
             albumId={route.albumId}
             settings={settings}
             back={() => history.length > 1 ? history.back() : navigate('discover')}
@@ -1168,7 +1258,14 @@ export function App() {
             notify={notify}
           />
         )}
-        {tab === 'discover' && <DiscoverView settings={settings} openAlbum={openAlbum} />}
+        {tab === 'discover' && (
+          <DiscoverView
+            settings={settings}
+            openAlbum={openAlbum}
+            session={discoverSession}
+            updateSession={updateDiscoverSession}
+          />
+        )}
         {tab === 'search' && (
           <SearchView
             settings={settings}

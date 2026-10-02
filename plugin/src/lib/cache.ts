@@ -1,9 +1,9 @@
 import { MIB } from '../constants';
-import type { CacheKind, CachedImage, ReaderSettings, StorageStats } from '../types';
+import type { ResourceHandle } from '@bjtu-mis/plugin-sdk';
+import type { CacheKind, ReaderSettings, StorageStats } from '../types';
 import { assertAllowedOrigin } from './images';
 import {
   cacheByteTotals,
-  deleteImageMetadata,
   evictTemporaryBytes,
   getImage,
   getSettings,
@@ -60,6 +60,10 @@ export function configuredBudget(
 
 export async function storageStats(): Promise<StorageStats> {
   await reconcileImageMetadata();
+  return readStorageStats();
+}
+
+async function readStorageStats(): Promise<StorageStats> {
   const usage = await getHostSdk().cache.usage();
   const totals = await cacheByteTotals();
   const settings = await getSettings();
@@ -76,14 +80,31 @@ export async function storageStats(): Promise<StorageStats> {
   };
 }
 
-async function makeRoomFor(bytes: number, kind: CacheKind): Promise<void> {
-  const stats = await storageStats();
+function checkCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new JmError('cancelled', '图片加载已取消。');
+}
+
+async function makeRoomFor(bytes: number, kind: CacheKind, signal?: AbortSignal): Promise<void> {
+  const usage = await getHostSdk().cache.usage();
+  checkCancelled(signal);
+  let freed = 0;
   if (kind === 'temporary') {
-    const excess = stats.temporaryBytes + bytes - stats.budget;
-    if (excess > 0) await evictTemporaryBytes(excess);
+    const settings = await getSettings();
+    checkCancelled(signal);
+    const budget = configuredBudget(settings.cacheLimit, { quota: usage.byteLimit, usage: usage.bytesUsed });
+    // Temporary bytes cannot exceed total usage. Only inspect metadata when
+    // total usage cannot prove that the next image fits.
+    if (usage.bytesUsed + bytes > budget) {
+      const totals = await cacheByteTotals();
+      checkCancelled(signal);
+      const excess = totals.temporaryBytes + bytes - budget;
+      if (excess > 0) freed = await evictTemporaryBytes(excess, signal);
+    }
   }
-  if (stats.available < bytes) {
-    await evictTemporaryBytes(bytes - stats.available);
+  checkCancelled(signal);
+  const available = Math.max(0, usage.byteLimit - usage.bytesUsed) + freed;
+  if (available < bytes) {
+    await evictTemporaryBytes(bytes - available, signal);
   }
 }
 
@@ -97,13 +118,17 @@ async function promoteWithQuotaRetry(
   key: string,
   bytes: number,
   kind: CacheKind,
+  signal?: AbortSignal,
 ) {
-  await makeRoomFor(bytes, kind);
+  await makeRoomFor(bytes, kind, signal);
+  checkCancelled(signal);
   try {
     return await getHostSdk().cache.promote(handle, key, { pinned: kind === 'pinned' });
   } catch (error) {
     if (!isQuotaError(error)) throw error;
-    await evictTemporaryBytes(Math.max(bytes, 25 * MIB));
+    checkCancelled(signal);
+    await evictTemporaryBytes(Math.max(bytes, 25 * MIB), signal);
+    checkCancelled(signal);
     try {
       return await getHostSdk().cache.promote(handle, key, { pinned: kind === 'pinned' });
     } catch (retryError) {
@@ -119,63 +144,66 @@ async function promoteWithQuotaRetry(
   }
 }
 
-async function cachedResource(
-  key: string,
-  metadata: CachedImage | undefined,
-  requestedKind: CacheKind,
-): Promise<{ src: string; record: CachedImage } | null> {
-  const resource = await getHostSdk().cache.match(key);
-  if (!resource) {
-    if (metadata) await deleteImageMetadata(key);
-    return null;
-  }
-  const now = Date.now();
-  const record: CachedImage = metadata
-    ? { ...metadata, accessedAt: now }
-    : {
-        key,
-        albumId: '',
-        chapterId: '',
-        page: 0,
-        sourceUrl: '',
-        contentType: resource.contentType,
-        bytes: resource.size,
-        kind: resource.pinned ? 'pinned' : 'temporary',
-        accessedAt: now,
-        createdAt: now,
-      };
-  if (requestedKind === 'pinned' && record.kind !== 'pinned') {
-    await getHostSdk().cache.pin(key, true);
-    record.kind = 'pinned';
-  }
-  await putImage(record);
-  return { src: resource.url, record };
-}
-
-export async function loadImage(input: {
+interface ImageInput {
   albumId: string;
   chapterId: string;
   page: number;
   url: string;
   kind?: CacheKind;
   signal?: AbortSignal;
-}): Promise<{ src: string; cached: boolean; corsReadable: boolean; revoke?: () => void }> {
+  background?: boolean;
+}
+
+async function rememberCachedResource(
+  key: string,
+  resource: ResourceHandle,
+  input: ImageInput,
+): Promise<void> {
+  checkCancelled(input.signal);
+  const metadata = await getImage(key);
+  checkCancelled(input.signal);
+  const now = Date.now();
+  if (input.kind === 'pinned' && !resource.pinned) {
+    await getHostSdk().cache.pin(key, true);
+  }
+  checkCancelled(input.signal);
+  await putImage({
+    key,
+    albumId: input.albumId,
+    chapterId: input.chapterId,
+    page: input.page,
+    sourceUrl: input.url,
+    contentType: resource.contentType,
+    bytes: resource.size,
+    kind: input.kind === 'pinned' || resource.pinned || metadata?.kind === 'pinned' ? 'pinned' : 'temporary',
+    accessedAt: now,
+    createdAt: metadata?.createdAt ?? now,
+  });
+}
+
+export async function loadImage(input: ImageInput): Promise<{ src: string; cached: boolean; corsReadable: boolean; revoke?: () => void }> {
+  checkCancelled(input.signal);
   assertAllowedOrigin(input.url);
   const requestedKind = input.kind || 'temporary';
   const key = imageCacheKey(input.chapterId, input.page, input.url);
-  const metadata = await getImage(key);
-  const cached = await cachedResource(key, metadata, requestedKind);
+  let cached;
+  try {
+    cached = await getHostSdk().cache.match(key, { signal: input.signal });
+  } catch (error) {
+    checkCancelled(input.signal);
+    throw error;
+  }
+  checkCancelled(input.signal);
   if (cached) {
-    if (!cached.record.albumId) {
-      await putImage({
-        ...cached.record,
-        albumId: input.albumId,
-        chapterId: input.chapterId,
-        page: input.page,
-        sourceUrl: input.url,
-      });
+    // A speculative cache hit needs no metadata write. Repeated encrypted KV
+    // updates otherwise compete with the image the user is actually viewing.
+    if (!input.background || requestedKind === 'pinned') {
+      const save = rememberCachedResource(key, cached, input);
+      // Explicit downloads still wait for durable pinning and metadata.
+      if (requestedKind === 'pinned') await save;
+      else void save.catch(() => undefined);
     }
-    return { src: cached.src, cached: true, corsReadable: true };
+    return { src: cached.url, cached: true, corsReadable: true };
   }
 
   let response;
@@ -208,26 +236,29 @@ export async function loadImage(input: {
   }
 
   const resource = response.resource;
-  const settings = await getSettings();
-  const shouldCache = requestedKind === 'pinned' || settings.cacheLimit !== 'off';
-  if (!shouldCache) {
-    return {
-      src: resource.url,
-      cached: false,
-      corsReadable: true,
-      revoke: () => {
-        void getHostSdk().cache.deleteHandle(resource.handle).catch(() => false);
-      },
-    };
-  }
-
   try {
+    checkCancelled(input.signal);
+    const settings = await getSettings();
+    checkCancelled(input.signal);
+    const shouldCache = requestedKind === 'pinned' || settings.cacheLimit !== 'off';
+    if (!shouldCache) {
+      return {
+        src: resource.url,
+        cached: false,
+        corsReadable: true,
+        revoke: () => {
+          void getHostSdk().cache.deleteHandle(resource.handle).catch(() => false);
+        },
+      };
+    }
     const promoted = await promoteWithQuotaRetry(
       resource.handle,
       key,
       resource.size,
       requestedKind,
+      input.signal,
     );
+    checkCancelled(input.signal);
     const now = Date.now();
     await putImage({
       key,
@@ -244,6 +275,7 @@ export async function loadImage(input: {
     return { src: promoted.url, cached: false, corsReadable: true };
   } catch (error) {
     await getHostSdk().cache.deleteHandle(resource.handle).catch(() => false);
+    checkCancelled(input.signal);
     if (requestedKind === 'pinned') throw mapHostError(error);
     return { src: input.url, cached: false, corsReadable: false };
   }
@@ -257,15 +289,16 @@ export async function prefetchChapter(
   kind: CacheKind = 'temporary',
   signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return;
   if (kind === 'temporary' && (await getSettings()).cacheLimit === 'off') return;
+  if (signal?.aborted) return;
   const lookaheadStart = Math.min(urls.length, fromPage + 1);
-  const initialEnd = Math.min(urls.length, fromPage + 3);
-  for (let page = lookaheadStart; page < initialEnd; page += 1) {
-    await loadImage({ albumId, chapterId, page, url: urls[page], kind, signal });
-  }
-  if (getHostRuntimeState().network.metered || signal?.aborted) return;
-  for (let page = initialEnd; page < urls.length; page += 1) {
+  const lookaheadEnd = Math.min(urls.length, fromPage + 3);
+  for (let page = lookaheadStart; page < urls.length; page += 1) {
+    // Yield between pages so clicks and route changes can cancel speculative work.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     if (signal?.aborted) return;
-    await loadImage({ albumId, chapterId, page, url: urls[page], kind, signal });
+    if (page >= lookaheadEnd && (kind === 'temporary' || getHostRuntimeState().network.metered)) return;
+    await loadImage({ albumId, chapterId, page, url: urls[page], kind, signal, background: true });
   }
 }

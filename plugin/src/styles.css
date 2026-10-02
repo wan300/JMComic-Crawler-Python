@@ -302,8 +302,8 @@ input[role="switch"]:checked::before { transform: translateX(20px); }
 .vertical-reader > [data-resume-target="true"] { overflow-anchor: auto; }
 .comic-page { position: relative; width: 100%; min-height: 120px; background: #111; }
 .comic-page > img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
-.image-placeholder { min-height: 55vh; display: grid; place-items: center; }
-.image-error { min-height: 40vh; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #aaa; }
+.image-placeholder { min-height: max(120px, calc(var(--host-viewport-height) * .55)); display: grid; place-items: center; }
+.image-error { min-height: max(120px, calc(var(--host-viewport-height) * .4)); display: flex; flex-direction: column; align-items: center; justify-content: center; color: #aaa; }
 .scrambled-page { overflow: hidden; }
 .comic-strip { position: absolute; left: 0; width: 100%; background-repeat: no-repeat; }
 .horizontal-reader { position: fixed; inset: 0 auto auto 0; width: var(--host-viewport-width); height: var(--host-viewport-height); overflow: hidden; display: grid; place-items: center; touch-action: pan-y; background: #050506; }

@@ -1,0 +1,79 @@
+name: BJTU Plugin Visual Regression
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  visual:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Start visual test server
+        shell: pwsh
+        run: |
+          $server = Start-Process -FilePath node `
+            -ArgumentList @(
+              "node_modules/vite/bin/vite.js",
+              "--config", "plugin/vite.config.ts",
+              "--host", "127.0.0.1",
+              "--port", "47651",
+              "--strictPort"
+            ) `
+            -WindowStyle Hidden `
+            -PassThru
+          $server.Id | Set-Content -Path "$env:RUNNER_TEMP/plugin-vite.pid"
+
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            try {
+              Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:47651/?mock=1" | Out-Null
+              exit 0
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          throw "Vite server did not become ready"
+
+      - name: Compare full-page visual snapshots
+        env:
+          PLAYWRIGHT_EXTERNAL_SERVER: "1"
+        run: npm run test:e2e:visual
+
+      - name: Upload visual differences and traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-visual-regression-${{ github.run_id }}
+          path: |
+            output/playwright/results
+            output/playwright/report
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Stop visual test server
+        if: always()
+        shell: pwsh
+        run: |
+          $pidFile = "$env:RUNNER_TEMP/plugin-vite.pid"
+          if (Test-Path -LiteralPath $pidFile) {
+            $serverPid = Get-Content -LiteralPath $pidFile
+            Stop-Process -Id $serverPid -Force -ErrorAction SilentlyContinue
+          }
